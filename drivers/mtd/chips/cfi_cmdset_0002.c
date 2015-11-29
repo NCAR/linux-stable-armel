@@ -80,7 +80,7 @@ static struct mtd_chip_driver cfi_amdstd_chipdrv = {
 };
 
 
-/* #define DEBUG_CFI_FEATURES */
+#define DEBUG_CFI_FEATURES
 
 
 #ifdef DEBUG_CFI_FEATURES
@@ -418,7 +418,7 @@ struct mtd_info *cfi_cmdset_0002(struct map_info *map, int primary)
 			cfi_fixup_major_minor(cfi, extp);
 
 			if (extp->MajorVersion != '1' ||
-			    (extp->MinorVersion < '0' || extp->MinorVersion > '4')) {
+			    (extp->MinorVersion < '0' || extp->MinorVersion > '5')) {
 				printk(KERN_ERR "  Unknown Amd/Fujitsu Extended Query "
 				       "version %c.%c.\n",  extp->MajorVersion,
 				       extp->MinorVersion);

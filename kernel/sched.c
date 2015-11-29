@@ -5219,7 +5219,11 @@ static int get_update_sysctl_factor(void)
 		break;
 	case SCHED_TUNABLESCALING_LOG:
 	default:
-		factor = 1 + ilog2(cpus);
+		if (cpus == 1) {
+			factor = 1;
+		} else {
+			factor = 1 + ilog2(cpus);
+		}
 		break;
 	}
 
