@@ -44,6 +44,7 @@
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/physmap.h>
 #include <linux/spi/spi.h>
+#include <linux/kernel_stat.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
@@ -73,7 +74,9 @@
  * Interrupt handling
  */
 
-static unsigned long titan_irq_enabled_mask;
+#define MAX_PC104_IRQ_HANDLE_EVENTS 10
+
+static unsigned int titan_irq_enabled_mask;
 static const int titan_isa_irqs[] = { 3, 4, 5, 6, 7, 10, 11, 12, 9, 14, 15 };
 static const int titan_isa_irq_map[] = {
 	0,		/* ISA irq #0, invalid */
@@ -104,6 +107,16 @@ static inline int titan_bit_to_irq(int bit)
 	return titan_isa_irqs[bit] + PXA_ISA_IRQ(0);
 }
 
+/* According to the Titan Technical Manual:
+ *     Once the PXA270 microprocessor has serviced a PC/104 interrupt,
+ *     the corresponding add-on-board clears the interrupt by driving
+ *     the IRQ signal low. When the TITAN hardware sees the interrupt
+ *     go low the corresponding bit is automatically cleared from the
+ *     I1_REG or I2_REG register.
+ * Therefore, setting this bit in the TITAN_CPLD_ISA_IRQ register
+ * is unnecessary, hence NEED_TO_ACK_TITAN_PC104_IRQ is not defined.
+ */
+#ifdef NEED_TO_ACK_TITAN_PC104_IRQ
 static void titan_ack_irq(unsigned int irq)
 {
 	int titan_irq = titan_irq_to_bitmask(irq);
@@ -113,6 +126,7 @@ static void titan_ack_irq(unsigned int irq)
 	else
 		TITAN_HI_IRQ_STATUS = (titan_irq >> 8);
 }
+#endif
 
 static void titan_mask_irq(unsigned int irq)
 {
@@ -124,29 +138,134 @@ static void titan_unmask_irq(unsigned int irq)
 	titan_irq_enabled_mask |= titan_irq_to_bitmask(irq);
 }
 
-static inline unsigned long titan_irq_pending(void)
+static inline unsigned int titan_irq_pending(void)
 {
 	return (TITAN_HI_IRQ_STATUS << 8 | TITAN_LO_IRQ_STATUS) &
 			titan_irq_enabled_mask;
 }
 
-static void titan_irq_handler(unsigned int irq, struct irq_desc *desc)
+/*
+ * Top level hander for the TITAN_ISA_IRQ GPIO interrupt.
+ * Checks the bits in the interrupt status registers to see what 
+ * PC104/ISA needs servicing and calls those handlers, until
+ * the bits are clear..
+ */
+static irqreturn_t
+titan_gpio_pc104_handler(int irq, void *dev_id)
 {
-	unsigned long pending;
+        unsigned int pending = titan_irq_pending();
+#ifdef DEBUG_SPURIOUS
+        static unsigned int spurious;
+#endif
 
-	for (;;) {
-		pending = titan_irq_pending();
-		if (unlikely(!pending))
-			break;
-		desc->chip->ack(irq);
-		irq = titan_bit_to_irq(__ffs(pending));
-		generic_handle_irq(irq);
-	}
+        /*
+         * Hack which seems to help with a possible bug in the PC104 CPLD.
+         * Sometimes a PC104 IRQ is high, and this hander is called,
+         * but the corresponding bit is not set in the TITAN_*_IRQ_STATUS
+         * registers. In this case, set pending to the unmasked interrupts.
+         * registers, and go ahead and service the enabled PC104 interrupts
+         * anyway, otherwise this GPIO handler may never be called again.
+         * It didn't help to just return IRQ_NONE in this case.
+         */
+        if (!pending) {
+#ifdef DEBUG_SPURIOUS
+                if (!(spurious++ % 1000))
+                    printk(KERN_WARNING "%u spurious interrupts\n",spurious);
+#endif
+                pending = titan_irq_enabled_mask;
+        }
+
+        do {
+                while (likely(pending)) {
+                        int bit = __ffs(pending);
+                        unsigned int titan_irq = titan_bit_to_irq(bit);
+                        struct irq_desc *titan_desc = irq_to_desc(titan_irq);
+                        titan_desc->handle_irq(titan_irq, titan_desc);
+                        pending &= ~(1 << bit);
+                }
+                pending = titan_irq_pending();
+        } while (pending);
+        return IRQ_HANDLED;
 }
 
-static struct irq_chip titan_irq_chip = {
-	.name   = "ISA",
+/*
+ *	handle_pc104_irq - Low level handler for PC104/ISA IRQS on a Titan.
+ *	This is identical to handle_simple_irq in kernel/irq/chip.c, except
+ *	that the action for the irq is called up to MAX_PC104_IRQ_HANDLE_EVENTS
+ *	or until the return value is not IRQ_HANDLED.
+ *	The intent is to make sure that the PC104 interrupt line actually is deasserted
+ *	so that the Titan PC104 CPLD can do its thing.  Otherwise, if the action list for
+ *	the PC104 irq is just called once, the IRQ line may not go low, and we may
+ *	not get another GPIO interrupt. This is especially the case for multi-port
+ *	serial cards, where doing one pass to service the UARTS may not cause the
+ *	IRQ to be desasserted, if a lower numbered port interrupts while handling
+ *	a higher numbered port.
+ *
+ *	Note that the mask/unmask functions in titan_pc104_irq_chip are not called.
+ *	Only one instance of this hander will be active (on a CPU), since
+ *	it is called by an edge handler, which has spinlocks around checks
+ *	of whether handers for the GPIO interrupt are IRQ_INPROGRESS.
+ *
+ *	Because of the above, one probably doesn't have to check for
+ *	IRQ_INPROGRESS here.
+ */
+static void
+handle_pc104_irq(unsigned int irq, struct irq_desc *desc)
+{
+	struct irqaction *action;
+	irqreturn_t action_ret;
+        extern int noirqdebug;
+        int ncall;
+
+	raw_spin_lock(&desc->lock);
+
+	if (unlikely(desc->status & IRQ_INPROGRESS))
+		goto out_unlock;
+	desc->status &= ~(IRQ_REPLAY | IRQ_WAITING);
+	kstat_incr_irqs_this_cpu(irq, desc);
+
+	action = desc->action;
+	if (unlikely(!action || (desc->status & IRQ_DISABLED)))
+		goto out_unlock;
+
+#ifdef NEED_TO_ACK_TITAN_PC104_IRQ
+        if (likely(desc->chip->ack)) desc->chip->ack(irq);
+#endif
+
+	desc->status |= IRQ_INPROGRESS;
+
+	raw_spin_unlock(&desc->lock);
+
+        for (ncall = 0; ncall < MAX_PC104_IRQ_HANDLE_EVENTS; ncall++) {
+                action_ret = handle_IRQ_event(irq, action);
+                if (!noirqdebug)
+                        note_interrupt(irq, desc, action_ret);
+                if (action_ret != IRQ_HANDLED) break;
+        }
+
+        /* if !noirqdebug, then interrupt lockups are being detected */
+        if (unlikely(noirqdebug && ncall == MAX_PC104_IRQ_HANDLE_EVENTS))
+		printk(KERN_WARNING "Possible lockup on PC104 IRQ %d\n",irq);
+        else if (unlikely(ncall > 3))
+ 		printk(KERN_INFO "handle_IRQ_event called %d times for IRQ %d\n",ncall,irq);
+
+	raw_spin_lock(&desc->lock);
+	desc->status &= ~IRQ_INPROGRESS;
+out_unlock:
+	raw_spin_unlock(&desc->lock);
+}
+
+static struct irqaction titan_gpio_pc104_irq = {
+        .name           = "GPIO_17-PC104",
+        .flags          = IRQF_VALID | IRQF_TRIGGER_RISING,
+        .handler        = titan_gpio_pc104_handler,
+};
+
+static struct irq_chip titan_pc104_irq_chip = {
+	.name   = "PC104",
+#ifdef NEED_TO_ACK_TITAN_PC104_IRQ
 	.ack	= titan_ack_irq,
+#endif
 	.mask	= titan_mask_irq,
 	.unmask	= titan_unmask_irq,
 };
@@ -169,14 +288,15 @@ static void __init titan_init_irq(void)
 	/* Setup ISA IRQs */
 	for (level = 0; level < ARRAY_SIZE(titan_isa_irqs); level++) {
 		isa_irq = titan_bit_to_irq(level);
-		printk(KERN_INFO "Map ISA IRQ %d to IRQ %d\n", titan_isa_irqs[level], isa_irq);
-		set_irq_chip(isa_irq, &titan_irq_chip);
-		set_irq_handler(isa_irq, handle_edge_irq);
+		printk(KERN_INFO "Map PC104 IRQ %d to IRQ %d, with looping handler\n", titan_isa_irqs[level], isa_irq);
+		set_irq_chip(isa_irq, &titan_pc104_irq_chip);
+		set_irq_handler(isa_irq, handle_pc104_irq);
 		set_irq_flags(isa_irq, IRQF_VALID | IRQF_PROBE);
 	}
-
+        printk(KERN_INFO "Titan PC104 GPIO=%d, irq=%d\n", TITAN_ISA_IRQ,gpio_to_irq(TITAN_ISA_IRQ));
 	set_irq_type(gpio_to_irq(TITAN_ISA_IRQ), IRQ_TYPE_EDGE_RISING);
-	set_irq_chained_handler(gpio_to_irq(TITAN_ISA_IRQ), titan_irq_handler);
+	set_irq_chained_handler(gpio_to_irq(TITAN_ISA_IRQ), handle_edge_irq);
+        setup_irq(gpio_to_irq(TITAN_ISA_IRQ), &titan_gpio_pc104_irq);
 }
 
 /*
@@ -253,6 +373,7 @@ static struct plat_serial8250_port serial_platform_data[] = {
 	{ /* COM4 */
 		.mapbase	= 0x10000000,
 		.irq		= gpio_to_irq(TITAN_UARTA_GPIO),
+                .irqflags       = IRQF_TRIGGER_RISING,
 		.uartclk	= 14745600,
 		.regshift	= 1,
 		.flags		= UPF_IOREMAP | UPF_BOOT_AUTOCONF | UPF_SKIP_TEST,
@@ -261,6 +382,7 @@ static struct plat_serial8250_port serial_platform_data[] = {
 	{ /* COM5 */
 		.mapbase	= 0x10800000,
 		.irq		= gpio_to_irq(TITAN_UARTB_GPIO),
+                .irqflags       = IRQF_TRIGGER_RISING,
 		.uartclk	= 14745600,
 		.regshift	= 1,
 		.flags		= UPF_IOREMAP | UPF_BOOT_AUTOCONF | UPF_SKIP_TEST,
@@ -575,12 +697,14 @@ static struct i2c_board_info __initdata titan_i2c_devices[] = {
 };
 
 static mfp_cfg_t common_pin_config[] __initdata = {
+        /* only chip select 1,4 and 5 on a titan */
 	GPIO15_nCS_1,
-	GPIO78_nCS_2,
 	GPIO80_nCS_4,
 	GPIO33_nCS_5,
 
-	GPIO22_GPIO,
+        /* also see titan_ohci_init() */
+	MFP_CFG_OUT(GPIO22, AF0, DRIVE_HIGH),   /* USB channel 2 power enable */
+	MFP_CFG_IN(GPIO114, AF0),               /* USB channel 2 over-current detect */
 
 	/* setup GPIO for PXA27x MMC controller */
 	GPIO32_MMC_CLK,
@@ -598,7 +722,6 @@ static mfp_cfg_t common_pin_config[] __initdata = {
 	GPIO86_LCD_LDD_16,
 	GPIO87_LCD_LDD_17,
 
-	GPIO102_GPIO,
 	GPIO104_CIF_DD_2,
 	GPIO105_CIF_DD_1,
 
@@ -609,27 +732,43 @@ static mfp_cfg_t common_pin_config[] __initdata = {
 	GPIO85_nPCE_1,
 	GPIO54_nPCE_2,
 	GPIO79_PSKTSEL,
-	GPIO55_nPREG,
 	GPIO56_nPWAIT,
 	GPIO57_nIOIS16,
-	GPIO36_GPIO,
-	GPIO97_GPIO,
+
+        /* GPIO lines for setting clock on DUART (ttyS3 and ttyS4)
+         * and 422/485 options on ttyS4 */
+	MFP_CFG_OUT(GPIO55, AF0, DRIVE_HIGH),   /* DUART, 0=8x clock, 1=16x clock */
+	MFP_CFG_OUT(GPIO84, AF0, DRIVE_HIGH),   /* DUART, clock pre-scaler, 0=/4, 1=/1 */
+	MFP_CFG_OUT(GPIO78, AF0, DRIVE_HIGH),   /* ttyS4, 0=RTS half duplex cntl, 1=norm */
+	MFP_CFG_OUT(GPIO81, AF0, DRIVE_HIGH),   /* 0=RS485, 1=RS422 */
+	MFP_CFG_OUT(GPIO115, AF0, DRIVE_HIGH),   /* 0=no term, 1=120 Ohm term */
+
+	MFP_CFG_OUT(GPIO102, AF0, DRIVE_HIGH),  /* Watchdog toggle line */
+
+        /* I2C */
+        GPIO117_I2C_SCL,
+        GPIO118_I2C_SDA,
 };
 
 #if (CONFIG_ARCOM_TITAN_VER & 1)
 static mfp_cfg_t titan_v1_pin_config[] __initdata = {
-	GPIO99_GPIO,
+	MFP_CFG_OUT(GPIO83, AF0, DRIVE_HIGH),   /* ttyS4, 0=reduced slew, 1=normal */
+	MFP_CFG_OUT(GPIO96, AF0, DRIVE_HIGH),   /* Watchdog timeout, 96=1,97=1,99=0 disabled */
+	MFP_CFG_OUT(GPIO97, AF0, DRIVE_HIGH),
+	MFP_CFG_OUT(GPIO99, AF0, DRIVE_LOW),
 };
 #endif
 
 #if (CONFIG_ARCOM_TITAN_VER & 2)
 static mfp_cfg_t titan_v2_pin_config[] __initdata = {
-	MFP_CFG_OUT(GPIO99, AF0, DRIVE_HIGH),
+	MFP_CFG_OUT(GPIO99, AF0, DRIVE_HIGH),   /* SD Power enable, 0=on, 1=off */
 };
 #endif
 
 static void __init titan_init(void)
 {
+        uint32_t mcioval;
+
 	system_rev = ((TITAN_BOARD_VERSION & 0xFF) << 8) | \
 	             (TITAN_CPLD_VERSION & 0xFF);
 
@@ -682,6 +821,29 @@ static void __init titan_init(void)
 
 	pxa_set_i2c_info(NULL);
 	i2c_register_board_info(0, ARRAY_AND_SIZE(titan_i2c_devices));
+
+        /*
+         * Adjust PC104 bus timing.  See section 6.5.5 of the
+         * "Intel PXA27x Processor Family Developer's Manual", concerning
+         * PXA Expansion Memory Timing Configuration Registers.
+         *
+         * To read/write the values of register MCIO1 on a running system, use the
+         * pxaregs command:
+         *    pxaregs MCIO1
+         *    paxregs MCIO1 0x14891
+         *
+         * Default values, 2.6.35:
+         *  MCIO(1)=0x14511 (HOLD=5,ASST=10,SET=17)
+         *
+         * With the above values a Titan could not communicate fully with a Diamond
+         * Emerald 8P PC104 serial card. Increasing values to 25 is necessary:
+         *  MCIO(1)=0x64c99 (HOLD=25,ASST=25,SET=25)
+         */
+        mcioval = (25 << 14) + (25 << 7) + 25;
+        MCIO(1) = mcioval;
+        printk(KERN_INFO "MCIO(1) set to %#x (HOLD=%d,ASST=%d,SET=%d): PC104 bus timing\n",
+                mcioval,(mcioval % 0xfc000) >> 14, (mcioval & 0xf80) >> 7,
+                (mcioval & 0x7f));
 }
 
 static struct map_desc titan_io_desc[] __initdata = {

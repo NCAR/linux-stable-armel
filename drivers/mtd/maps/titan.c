@@ -54,7 +54,7 @@ static void titan_map_inval_cache(struct map_info *map, unsigned long from,
 }
 #endif
 
-static int titan_flash_remove(struct platform_device *dev)
+static int titan_mtd_remove(struct platform_device *dev)
 {
 	struct titan_flash_info *info = dev_get_drvdata(&dev->dev);
 
@@ -83,7 +83,7 @@ static int titan_flash_remove(struct platform_device *dev)
 	return 0;
 }
 
-static int __init titan_mtd_probe(struct platform_device *dev)
+static int __devinit titan_mtd_probe(struct platform_device *dev)
 {
 	struct titan_flash_info *info;
 	int err;
@@ -147,7 +147,7 @@ static int __init titan_mtd_probe(struct platform_device *dev)
 	return 0;
 
   error:
-	titan_flash_remove(dev);
+	titan_mtd_remove(dev);
 	return err;
 }
 
@@ -176,7 +176,7 @@ static int titan_mtd_resume(struct platform_device *dev)
 
 static struct platform_driver titan_mtd_driver = {
 	.probe		= titan_mtd_probe,
-	.remove	 	= __exit_p(titan_mtd_remove),
+	.remove	 	= titan_mtd_remove,
 	.driver		= {
 		.name		= "flash",
 	},

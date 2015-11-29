@@ -1,0 +1,17 @@
+linux-source-2.6.35.9-ael1-3-titan (9479M.ncar)
+ 
+  * CONFIG_AEABI=y, CONFIG_OABI_COMPAT=y, gcc version 5
+
+ 
+ -- Gordon Maclean <maclean@ucar.edu>  Wed, 18 Nov 2015 00:00:00 -0700
+linux-source-2.6.35.9-ael1-2-titan (ncar)
+ 
+  * Gordon's hacks
+ 
+ -- Gordon Maclean <maclean@ucar.edu>  Wed, 18 Nov 2015 00:00:00 -0700
+linux-source-2.6.35.9-ael1-1-titan (arcom)
+ 
+  * Vendor's original
+  * ael-kernel-build script created.
+ 
+ --
