@@ -31,7 +31,10 @@
 
 /* implements a PHY loopback test at initialisation time, to ensure a packet
  * can be successfully looped back */
+
+#ifndef CONFIG_MACH_ARCOM_TITAN
 #define USE_PHY_WORK_AROUND
+#endif
 
 #define DPRINTK(nlevel, klevel, fmt, args...) \
 	((void)((NETIF_MSG_##nlevel & pdata->msg_enable) && \

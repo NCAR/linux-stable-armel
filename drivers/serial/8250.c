@@ -100,6 +100,9 @@ static unsigned int skip_txen_test; /* force skip of txen test at init time */
 #ifdef CONFIG_SERIAL_8250_MANY_PORTS
 #define CONFIG_SERIAL_MANY_PORTS 1
 #endif
+#ifdef CONFIG_MACH_ARCOM_TITAN
+#define DLL_TRY_COUNT 50
+#endif
 
 /*
  * HUB6 is always on.  This will be removed once the header
@@ -279,6 +282,13 @@ static const struct serial8250_config uart_config[] = {
 		.tx_loadsz	= 32,
 		.fcr		= UART_FCR_ENABLE_FIFO | UART_FCR_R_TRIG_10,
 		.flags		= UART_CAP_FIFO | UART_CAP_UUE,
+	},
+	[PORT_XR16550] = {
+		.name		= "XR16550",
+		.fifo_size	= 16,
+		.tx_loadsz	= 16,
+		.fcr		= UART_FCR_ENABLE_FIFO | UART_FCR_R_TRIG_10,
+		.flags		= UART_CAP_FIFO | UART_CAP_EFR | UART_CAP_SLEEP,
 	},
 	[PORT_RM9000] = {
 		.name		= "RM9000",
@@ -570,7 +580,24 @@ static inline int _serial_dl_read(struct uart_8250_port *up)
 /* Uart divisor latch write */
 static inline void _serial_dl_write(struct uart_8250_port *up, int value)
 {
+#ifdef CONFIG_MACH_ARCOM_TITAN
+    unsigned char dll, count = 0;
+#endif
 	serial_outp(up, UART_DLL, value & 0xff);
+
+#ifdef CONFIG_MACH_ARCOM_TITAN
+    /* work around Errata #75 according to Intel(R) PXA27x Processor Family
+     * Specification Update (Nov 2005)
+     */
+    dll = serial_inp(up, UART_DLL);
+    while((dll != (value & 0xff)) && (count<DLL_TRY_COUNT))
+    {
+        serial_outp(up, UART_DLL, value & 0xff);
+        dll = serial_inp(up, UART_DLL);
+        count++;
+    }
+#endif
+
 	serial_outp(up, UART_DLM, value >> 8 & 0xff);
 }
 
@@ -785,6 +812,10 @@ static unsigned int autoconfig_read_divisor_id(struct uart_8250_port *p)
 	unsigned char old_dll, old_dlm, old_lcr;
 	unsigned int id;
 
+#ifdef CONFIG_MACH_ARCOM_TITAN
+	unsigned char dll, count=0;
+#endif
+
 	old_lcr = serial_inp(p, UART_LCR);
 	serial_outp(p, UART_LCR, UART_LCR_DLAB);
 
@@ -797,6 +828,20 @@ static unsigned int autoconfig_read_divisor_id(struct uart_8250_port *p)
 	id = serial_inp(p, UART_DLL) | serial_inp(p, UART_DLM) << 8;
 
 	serial_outp(p, UART_DLL, old_dll);
+
+#ifdef CONFIG_MACH_ARCOM_TITAN
+    /* work around Errata #75 according to Intel(R) PXA27x Processor Family
+     * Specification Update (Nov 2005)
+     */
+    dll = serial_inp(p, UART_DLL);
+    while((dll != (old_dll&0xff)) && (count<DLL_TRY_COUNT))
+   {
+        serial_outp(p, UART_DLL, old_dll);
+        dll = serial_inp(p, UART_DLL);
+        count++;
+    }
+#endif
+
 	serial_outp(p, UART_DLM, old_dlm);
 	serial_outp(p, UART_LCR, old_lcr);
 
@@ -881,6 +926,27 @@ static void autoconfig_has_efr(struct uart_8250_port *up)
 		return;
 	}
 
+	/* The Exar XR16L255x has an DVID of 0x02. This will misdetect the
+	 * Exar ST16C255x (A2 revision) which has registers like the XR16L255x
+	 * but doesn't have a working sleep mode.  See also
+	 * http://www.exar.com/info.php?pdf=dan180_oct2004.pdf */
+	if (id2 == 0x02) {
+		unsigned int ier;
+
+		up->port.type = PORT_XR16550;
+
+		/* If we can't set the sleep mode bit then it may be a buggy
+		 * ST16C255x. FIXME: This test is currently unverified. */
+		serial_out(up, UART_IER, UART_IERX_SLEEP);
+		ier = serial_in(up, UART_IER);
+		serial_out(up, UART_IER, 0);
+		if ((ier & UART_IERX_SLEEP) != UART_IERX_SLEEP) {
+			up->capabilities &= ~(UART_CAP_EFR | UART_CAP_SLEEP);
+			up->port.type = PORT_16550A;
+		}
+		return;
+	}
+
 	/*
 	 * It wasn't an XR16C850.
 	 *
@@ -892,7 +958,7 @@ static void autoconfig_has_efr(struct uart_8250_port *up)
 	 */
 	if (size_fifo(up) == 64)
 		up->port.type = PORT_16654;
-	else
+	else if(size_fifo(up) == 32)
 		up->port.type = PORT_16650V2;
 }
 
@@ -916,19 +982,6 @@ static void autoconfig_8250(struct uart_8250_port *up)
 
 	if (status1 == 0xa5 && status2 == 0x5a)
 		up->port.type = PORT_16450;
-}
-
-static int broken_efr(struct uart_8250_port *up)
-{
-	/*
-	 * Exar ST16C2550 "A2" devices incorrectly detect as
-	 * having an EFR, and report an ID of 0x0201.  See
-	 * http://www.exar.com/info.php?pdf=dan180_oct2004.pdf
-	 */
-	if (autoconfig_read_divisor_id(up) == 0x0201 && size_fifo(up) == 16)
-		return 1;
-
-	return 0;
 }
 
 /*
@@ -968,7 +1021,7 @@ static void autoconfig_16550a(struct uart_8250_port *up)
 	 * (other ST16C650V2 UARTs, TI16C752A, etc)
 	 */
 	serial_outp(up, UART_LCR, 0xBF);
-	if (serial_in(up, UART_EFR) == 0 && !broken_efr(up)) {
+	if (serial_in(up, UART_EFR) == 0) {
 		DEBUG_AUTOCONF("EFRv2 ");
 		autoconfig_has_efr(up);
 		return;
@@ -1136,7 +1189,7 @@ static void autoconfig(struct uart_8250_port *up, unsigned int probeflags)
 #endif
 		scratch3 = serial_inp(up, UART_IER) & 0x0f;
 		serial_outp(up, UART_IER, scratch);
-		if (scratch2 != 0 || scratch3 != 0x0F) {
+		if ((scratch2 & 0x0f) != 0 || (scratch3 & 0x0f) != 0x0F) {
 			/*
 			 * We failed; there's nothing here
 			 */
@@ -2108,6 +2161,7 @@ static int serial8250_startup(struct uart_port *port)
 	if (skip_txen_test || up->port.flags & UPF_NO_TXEN_TEST)
 		goto dont_test_tx_en;
 
+#if 0
 	/*
 	 * Do a quick test to see if we receive an
 	 * interrupt when we enable the TX irq.
@@ -2126,7 +2180,7 @@ static int serial8250_startup(struct uart_port *port)
 	} else {
 		up->bugs &= ~UART_BUG_TXEN;
 	}
-
+#endif
 dont_test_tx_en:
 	spin_unlock_irqrestore(&up->port.lock, flags);
 

@@ -660,6 +660,16 @@ AC97_SINGLE("Headphone ZC Switch", AC97_HEADPHONE, 7, 1, 0),
 AC97_SINGLE("Mono ZC Switch", AC97_MASTER_MONO, 7, 1, 0),
 };
 
+static struct ac97_quirk ac97_quirks[] __devinitdata = {
+	{
+		.subvendor = 0,
+		.subdevice = 0,
+		.codec_id = 0x574d4c12,
+		.name = "WM9712 GPIO01 used as external amp shutdown pin",
+		.type = AC97_TUNE_WM9712_GPIO01_AS_EAPD
+	}
+};
+
 static int patch_wolfson_wm9711_specific(struct snd_ac97 * ac97)
 {
 	int err, i;
@@ -674,6 +684,7 @@ static int patch_wolfson_wm9711_specific(struct snd_ac97 * ac97)
 	snd_ac97_write_cache(ac97,  AC97_AUX, 0x0808);
 	snd_ac97_write_cache(ac97,  AC97_PC_BEEP, 0x0808);
 	snd_ac97_write_cache(ac97,  AC97_CD, 0x0000);
+	snd_ac97_tune_hardware(ac97, ac97_quirks, "wm9712_mute_external_amp");
 	return 0;
 }
 

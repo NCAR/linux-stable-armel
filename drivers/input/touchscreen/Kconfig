@@ -603,4 +603,21 @@ config TOUCHSCREEN_TPS6507X
 	  To compile this driver as a module, choose M here: the
 	  module will be called tps6507x_ts.
 
+config TOUCHSCREEN_WM97XX_PXA
+	bool "WM97xx PXA accelerated touch"
+	depends on TOUCHSCREEN_WM97XX && ARCH_PXA
+	select TOUCHSCREEN_WM97XX_ACC
+	help
+	  Say Y here for continuous mode touch on the PXA
+	  If unsure, say N
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called pxa-wm97xx
+	  
+config TOUCHSCREEN_WM97XX_ACC
+	bool
+	help
+	  Enable support for WM97xx accelerated touchscreens
+	  
 endif
+

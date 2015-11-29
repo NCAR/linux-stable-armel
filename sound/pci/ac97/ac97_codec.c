@@ -1632,11 +1632,6 @@ static int snd_ac97_mixer_build(struct snd_ac97 * ac97)
 		ac97->spdif_status = SNDRV_PCM_DEFAULT_CON_SPDIF;
 	}
 	
-	/* build chip specific controls */
-	if (ac97->build_ops->build_specific)
-		if ((err = ac97->build_ops->build_specific(ac97)) < 0)
-			return err;
-
 	if (snd_ac97_try_bit(ac97, AC97_POWERDOWN, 15)) {
 		kctl = snd_ac97_cnew(&snd_ac97_control_eapd, ac97);
 		if (! kctl)
@@ -1646,6 +1641,11 @@ static int snd_ac97_mixer_build(struct snd_ac97 * ac97)
 		if ((err = snd_ctl_add(card, kctl)) < 0)
 			return err;
 	}
+
+	/* build chip specific controls */
+	if (ac97->build_ops->build_specific)
+		if ((err = ac97->build_ops->build_specific(ac97)) < 0)
+			return err;
 
 	return 0;
 }
@@ -2807,6 +2807,34 @@ static int tune_hp_mute_led(struct snd_ac97 *ac97)
 	return 0;
 }
 
+static int wm9712_mute_external_amp_sw_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
+{
+	int mask = 0x0002;  /* GPIO01 0xf83c*/
+	int err = bind_hp_volsw_put(kcontrol, ucontrol);
+	if (err > 0) {
+		struct snd_ac97 *ac97 = snd_kcontrol_chip(kcontrol);
+		/* AC97_GPIO_CFG = 0xf83c (GPIO01 low) - External Amplifier ON
+		 * AC97_GPIO_CFG = 0xf83e (GPIO01 high) - External Amplifier OFF */
+	err = snd_ac97_update_bits(ac97, AC97_GPIO_CFG, mask, (ac97->regs[AC97_GPIO_CFG] & mask ) ? 0 : mask);
+	}
+	return err;
+}
+
+static int tune_wm9712_mute_external_amp(struct snd_ac97 *ac97)
+{
+	struct snd_kcontrol *msw = ctl_find(ac97, "External Amplifier", NULL);
+	int mask = 0x0002;  /* GPIO01 */
+	if (!msw) {
+		printk(KERN_WARNING"can't find external amplifier control.\n");
+		return -ENOENT;
+	}
+	msw->put = wm9712_mute_external_amp_sw_put;
+	/* make AC97_GPIO_CFG = 0xf83c (GPIO01 low) to put External Amplifier ON at the start */
+	snd_ac97_update_bits(ac97, AC97_GPIO_CFG, mask, 0);
+	return 0;
+}
+
+
 struct quirk_table {
 	const char *name;
 	int (*func)(struct snd_ac97 *);
@@ -2822,6 +2850,7 @@ static struct quirk_table applicable_quirks[] = {
 	{ "inv_eapd", tune_inv_eapd },
 	{ "mute_led", tune_mute_led },
 	{ "hp_mute_led", tune_hp_mute_led },
+	{ "wm9712_mute_external_amp", tune_wm9712_mute_external_amp },
 };
 
 /* apply the quirk with the given type */

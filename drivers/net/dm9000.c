@@ -979,7 +979,7 @@ dm9000_rx(struct net_device *dev)
 	/* Check packet ready or not */
 	do {
 		ior(db, DM9000_MRCMDX);	/* Dummy read */
-
+		udelay(200);		/*http://www.spinics.net/lists/arm-kernel/msg69078.html*/
 		/* Get most updated data */
 		rxbyte = readb(db->io_data);
 
@@ -1643,9 +1643,10 @@ dm9000_drv_resume(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct net_device *ndev = platform_get_drvdata(pdev);
-	board_info_t *db = netdev_priv(ndev);
 
 	if (ndev) {
+		board_info_t *db = netdev_priv(ndev);
+
 		if (netif_running(ndev)) {
 			/* reset if we were not in wake mode to ensure if
 			 * the device was powered off it is in a known state */

@@ -241,6 +241,62 @@ isl1208_rtc_proc(struct device *dev, struct seq_file *seq)
 }
 
 static int
+isl1208_i2c_set_time(struct i2c_client *client, struct rtc_time const *tm)
+{
+	int sr;
+	u8 regs[ISL1208_RTC_SECTION_LEN] = { 0, };
+
+	/* The clock has an 8 bit wide bcd-coded register (they never learn)
+	 * for the year. tm_year is an offset from 1900 and we are interested
+	 * in the 2000-2099 range, so any value less than 100 is invalid.
+	 */
+	if (tm->tm_year < 100)
+		return -EINVAL;
+
+	regs[ISL1208_REG_SC] = bin2bcd(tm->tm_sec);
+	regs[ISL1208_REG_MN] = bin2bcd(tm->tm_min);
+	regs[ISL1208_REG_HR] = bin2bcd(tm->tm_hour) | ISL1208_REG_HR_MIL;
+
+	regs[ISL1208_REG_DT] = bin2bcd(tm->tm_mday);
+	regs[ISL1208_REG_MO] = bin2bcd(tm->tm_mon + 1);
+	regs[ISL1208_REG_YR] = bin2bcd(tm->tm_year - 100);
+
+	regs[ISL1208_REG_DW] = bin2bcd(tm->tm_wday & 7);
+
+	sr = isl1208_i2c_get_sr(client);
+	if (sr < 0) {
+		dev_err(&client->dev, "%s: reading SR failed\n", __func__);
+		return sr;
+	}
+
+	/* set WRTC */
+	sr = i2c_smbus_write_byte_data(client, ISL1208_REG_SR,
+				       sr | ISL1208_REG_SR_WRTC);
+	if (sr < 0) {
+		dev_err(&client->dev, "%s: writing SR failed\n", __func__);
+		return sr;
+	}
+
+	/* write RTC registers */
+	sr = isl1208_i2c_set_regs(client, 0, regs, ISL1208_RTC_SECTION_LEN);
+	if (sr < 0) {
+		dev_err(&client->dev, "%s: writing RTC section failed\n",
+			__func__);
+		return sr;
+	}
+
+	/* clear WRTC again */
+	sr = i2c_smbus_write_byte_data(client, ISL1208_REG_SR,
+				       sr & ~ISL1208_REG_SR_WRTC);
+	if (sr < 0) {
+		dev_err(&client->dev, "%s: writing SR failed\n", __func__);
+		return sr;
+	}
+
+	return 0;
+}
+
+static int
 isl1208_i2c_read_time(struct i2c_client *client, struct rtc_time *tm)
 {
 	int sr;
@@ -257,6 +313,17 @@ isl1208_i2c_read_time(struct i2c_client *client, struct rtc_time *tm)
 		dev_err(&client->dev, "%s: reading RTC section failed\n",
 			__func__);
 		return sr;
+	}
+
+	if (regs[ISL1208_REG_MO] == 0) {
+		tm->tm_sec = 1;
+                tm->tm_min = 0;
+                tm->tm_hour = 0;
+                tm->tm_mday = 1;
+                tm->tm_mon = 0;
+                tm->tm_year = 100;
+                tm->tm_wday = 6;
+                isl1208_i2c_set_time(client, tm);
 	}
 
 	tm->tm_sec = bcd2bin(regs[ISL1208_REG_SC]);
@@ -320,62 +387,6 @@ static int
 isl1208_rtc_read_time(struct device *dev, struct rtc_time *tm)
 {
 	return isl1208_i2c_read_time(to_i2c_client(dev), tm);
-}
-
-static int
-isl1208_i2c_set_time(struct i2c_client *client, struct rtc_time const *tm)
-{
-	int sr;
-	u8 regs[ISL1208_RTC_SECTION_LEN] = { 0, };
-
-	/* The clock has an 8 bit wide bcd-coded register (they never learn)
-	 * for the year. tm_year is an offset from 1900 and we are interested
-	 * in the 2000-2099 range, so any value less than 100 is invalid.
-	 */
-	if (tm->tm_year < 100)
-		return -EINVAL;
-
-	regs[ISL1208_REG_SC] = bin2bcd(tm->tm_sec);
-	regs[ISL1208_REG_MN] = bin2bcd(tm->tm_min);
-	regs[ISL1208_REG_HR] = bin2bcd(tm->tm_hour) | ISL1208_REG_HR_MIL;
-
-	regs[ISL1208_REG_DT] = bin2bcd(tm->tm_mday);
-	regs[ISL1208_REG_MO] = bin2bcd(tm->tm_mon + 1);
-	regs[ISL1208_REG_YR] = bin2bcd(tm->tm_year - 100);
-
-	regs[ISL1208_REG_DW] = bin2bcd(tm->tm_wday & 7);
-
-	sr = isl1208_i2c_get_sr(client);
-	if (sr < 0) {
-		dev_err(&client->dev, "%s: reading SR failed\n", __func__);
-		return sr;
-	}
-
-	/* set WRTC */
-	sr = i2c_smbus_write_byte_data(client, ISL1208_REG_SR,
-				       sr | ISL1208_REG_SR_WRTC);
-	if (sr < 0) {
-		dev_err(&client->dev, "%s: writing SR failed\n", __func__);
-		return sr;
-	}
-
-	/* write RTC registers */
-	sr = isl1208_i2c_set_regs(client, 0, regs, ISL1208_RTC_SECTION_LEN);
-	if (sr < 0) {
-		dev_err(&client->dev, "%s: writing RTC section failed\n",
-			__func__);
-		return sr;
-	}
-
-	/* clear WRTC again */
-	sr = i2c_smbus_write_byte_data(client, ISL1208_REG_SR,
-				       sr & ~ISL1208_REG_SR_WRTC);
-	if (sr < 0) {
-		dev_err(&client->dev, "%s: writing SR failed\n", __func__);
-		return sr;
-	}
-
-	return 0;
 }
 
 
