@@ -157,11 +157,48 @@ dm9000_reset(board_info_t * db)
 {
 	dev_dbg(db->dev, "resetting device\n");
 
-	/* RESET device */
+        /* Reset DM9000 */
+        /* see DM9000 Application Notes V1.22 Jun 11, 2004 page 29 */
+
+        /* This patch was taken from an email by Michael Abbott to the
+         * Linux Kernel mailing list:
+         * Subject  [PATCH] Implement full reset of DM9000 network device
+         * https://lkml.org/lkml/2012/5/21/186
+         *
+         * Without this patch, the dm9000 will not regain a lost
+         * ethernet link on a Eurotech Titan.
+         */
+   
+        /* DEBUG: Make all GPIO0 outputs, all others inputs */
+        writeb(DM9000_GPCR, db->io_addr);
+        udelay(200);
+        writeb(GPCR_GPIO0_OUT, db->io_data);
+        udelay(200);
+   
+        /* Step 1: Power internal PHY by writing 0 to GPIO0 pin */
+        writeb(DM9000_GPR, db->io_addr);
+        udelay(200);
+        writeb(0, db->io_data);
+        udelay(200);
+        
+        /* Step 2: Software reset */
 	writeb(DM9000_NCR, db->io_addr);
+	writeb(NCR_LBK_INT_MAC | NCR_RST, db->io_data);
 	udelay(200);
-	writeb(NCR_RST, db->io_data);
+
+	writeb(DM9000_NCR, db->io_addr);
+        if (readb(db->io_data) & 1)
+            dev_err(db->dev, "dm9000 did not respond to first reset\n");
+
+	writeb(DM9000_NCR, db->io_addr);
+	writeb(0, db->io_data);
+	writeb(DM9000_NCR, db->io_addr);
+	writeb(NCR_LBK_INT_MAC | NCR_RST, db->io_data);
 	udelay(200);
+	writeb(DM9000_NCR, db->io_addr);
+        if (readb(db->io_data) & 1)
+            dev_err(db->dev, "dm9000 did not respond to second reset\n");
+
 }
 
 /*

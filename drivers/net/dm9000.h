@@ -70,6 +70,8 @@
 #define NCR_FCOL            (1<<4)
 #define NCR_FDX             (1<<3)
 #define NCR_LBK             (3<<1)
+#define NCR_LBK_INT_MAC     (1<<1)
+#define NCR_LBK_INT_PHY     (2<<1)
 #define NCR_RST	            (1<<0)
 
 #define NSR_SPEED           (1<<7)
@@ -141,6 +143,8 @@
 #define EPCR_ERRE           (1<<0)
 
 #define GPCR_GEP_CNTL       (1<<0)
+
+#define GPCR_GPIO0_OUT               (1<<0)
 
 #define TCCR_IP		    (1<<0)
 #define TCCR_TCP	    (1<<1)
