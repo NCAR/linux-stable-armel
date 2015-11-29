@@ -1,0 +1,8 @@
+#!/bin/sh
+
+# Copy the System.map to $IMAGE_TOP/boot where it will
+# be incorporated into the debian package
+cp System.map $IMAGE_TOP/boot/System.map-$version
+
+mkdir $IMAGE_TOP/debian
+cp ael/ChangeLog $IMAGE_TOP/debian/changelog

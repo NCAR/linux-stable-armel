@@ -2057,8 +2057,16 @@ static int serial8250_startup(struct uart_port *port)
 		serial_outp(up, UART_LCR, 0xbf);
 
 		fctr = serial_inp(up, UART_FCTR) & ~(UART_FCTR_RX|UART_FCTR_TX);
+                /* Lower receiver FIFO trigger level from 96 to 64 characters.
+                 * This should reduce read FIFO overflows, because the read FIFO
+                 * will have 128-64=64 characters of space left after the interrupt,
+                 * instead of 128-96=32.
+                 * Leave transmit trigger level at 96. Transmit interrupts are sent
+                 * when the number of characters in the transmit FIFO is below
+                 * this level.
+                 */
 		serial_outp(up, UART_FCTR, fctr | UART_FCTR_TRGD | UART_FCTR_RX);
-		serial_outp(up, UART_TRG, UART_TRG_96);
+		serial_outp(up, UART_TRG, UART_TRG_64);
 		serial_outp(up, UART_FCTR, fctr | UART_FCTR_TRGD | UART_FCTR_TX);
 		serial_outp(up, UART_TRG, UART_TRG_96);
 
