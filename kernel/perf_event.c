@@ -32,7 +32,7 @@
 #include <linux/perf_event.h>
 #include <linux/ftrace_event.h>
 #include <linux/hw_breakpoint.h>
-
+#include <linux/types.h>
 #include <asm/irq_regs.h>
 
 /*

@@ -589,6 +589,7 @@ enum {
 	AC97_TUNE_INV_EAPD,	/* inverted EAPD implementation */
 	AC97_TUNE_MUTE_LED,	/* EAPD bit works as mute LED */
 	AC97_TUNE_HP_MUTE_LED,  /* EAPD bit works as mute LED, use headphone control as master */
+	AC97_TUNE_WM9712_GPIO01_AS_EAPD /* WM9712's GPIO01 works as AMP shutdown pin */
 };
 
 struct ac97_quirk {
