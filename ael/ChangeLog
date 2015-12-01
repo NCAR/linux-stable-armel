@@ -1,3 +1,6 @@
+linux-source-2.6.35.14-ael1-1-titan (1.ncar)
+ 
+  * CONFIG_AEABI=y, CONFIG_OABI_COMPAT=y, gcc version 5
 linux-source-2.6.35.9-ael1-3-titan (9479M.ncar)
  
   * CONFIG_AEABI=y, CONFIG_OABI_COMPAT=y, gcc version 5
