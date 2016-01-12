@@ -543,6 +543,23 @@ config MACH_ICONTROL
 	select CPU_PXA320
 	select PXA3xx
 
+config MACH_ARCOM_TITAN
+	bool "Eurotech TITAN"
+	select PXA27x
+        select ISA
+        select PXA_HAVE_BOARD_IRQS
+        select PXA_HAVE_ISA_IRQS
+
+config ARCOM_TITAN_VER
+	int "Eurotech TITAN version [1,2,3=ANY]"
+	depends on MACH_ARCOM_TITAN
+	range 1 3
+	default 3
+	help
+	  1 = Compile for Titan-V1 only.
+	  2 = Compile for Titan-V2 only.
+	  3 = Compile for any Titan.
+
 config ARCH_PXA_ESERIES
 	bool "PXA based Toshiba e-series PDAs"
 	select FB_W100
