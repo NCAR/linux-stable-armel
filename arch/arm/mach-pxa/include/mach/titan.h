@@ -23,7 +23,7 @@
 
 /* Virtual addresses */
 #define TITAN_CPLD_BASE		(0xf0000000)
-#define TITAN_PC104IO_BASE	(0xf1000000)
+#define TITAN_PC104IO_BASE	IOMEM(0xf1000000)
 
 /* GPIOs */
 #define TITAN_AC97_GPIO		(0)
@@ -48,11 +48,11 @@
 
 /* ... Physical <--> Virtual address mapping */
 	/*                              PHYSICAL_ADDR     VIRTUAL_ADDR
-	 *      TITAN_BOARD_VERSION ___ 0x1200_0000 <---> 0xF000_0000
-	 *      TITAN_HI_IRQ_STATUS ___ 0x1280_0000 <---> 0xF000_1000
-	 *      TITAN_CPLD_VERSION  ___ 0x1300_0000 <---> 0xF000_2000
-	 *      TITAN_LO_IRQ_STATUS ___ 0x1380_0000 <---> 0xF000_3000
-	 *      TITAN_MISC          ___ 0x1400_0000 <---> 0xF000_4000    */
+	 *      TITAN_BOARD_VERSION ___ 0x1100_0000 <---> 0xF000_0000
+	 *      TITAN_HI_IRQ_STATUS ___ 0x1180_0000 <---> 0xF000_1000
+	 *      TITAN_CPLD_VERSION  ___ 0x1200_0000 <---> 0xF000_2000
+	 *      TITAN_LO_IRQ_STATUS ___ 0x1280_0000 <---> 0xF000_3000
+	 *      TITAN_MISC          ___ 0x1300_0000 <---> 0xF000_4000    */
 #define TITAN_CPLD_REG_PHYS_SIZE	0x800000
 #define TITAN_CPLD_REG_VIRT_SIZE	0x1000
 #define __TITAN_CPLD_DIV	(TITAN_CPLD_REG_PHYS_SIZE / TITAN_CPLD_REG_VIRT_SIZE)
