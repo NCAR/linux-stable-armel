@@ -549,6 +549,7 @@ config MACH_ARCOM_TITAN
         select ISA
         select PXA_HAVE_BOARD_IRQS
         select PXA_HAVE_ISA_IRQS
+        select NEED_MACH_IO_H
 
 config ARCOM_TITAN_VER
 	int "Eurotech TITAN version [1,2,3=ANY]"
