@@ -378,6 +378,46 @@ out_unlock:
 }
 EXPORT_SYMBOL_GPL(handle_simple_irq);
 
+#define MAX_PC104_IRQ_HANDLE_EVENTS 10
+/**
+ *	handle_simple_irq_til_done - Simple and software-decoded IRQs.
+ *	@irq:	the interrupt number
+ *	@desc:	the interrupt description structure for this irq
+ *
+ *	Simple interrupts are either sent from a demultiplexing interrupt
+ *	handler or come from hardware, where no interrupt hardware control
+ *	is necessary.
+ *
+ *	Note: The caller is expected to handle the ack, clear, mask and
+ *	unmask issues if necessary.
+ */
+void
+handle_simple_irq_til_done(unsigned int irq, struct irq_desc *desc)
+{
+        int ncall;
+	raw_spin_lock(&desc->lock);
+
+	if (unlikely(irqd_irq_inprogress(&desc->irq_data)))
+		if (!irq_check_poll(desc))
+			goto out_unlock;
+
+	desc->istate &= ~(IRQS_REPLAY | IRQS_WAITING);
+	kstat_incr_irqs_this_cpu(irq, desc);
+
+	if (unlikely(!desc->action || irqd_irq_disabled(&desc->irq_data))) {
+		desc->istate |= IRQS_PENDING;
+		goto out_unlock;
+	}
+
+        for (ncall = 0; ncall < MAX_PC104_IRQ_HANDLE_EVENTS; ncall++) {
+                if (handle_irq_event(desc) != IRQ_HANDLED) break;
+        }
+
+out_unlock:
+	raw_spin_unlock(&desc->lock);
+}
+EXPORT_SYMBOL_GPL(handle_simple_irq_til_done);
+
 /*
  * Called unconditionally from handle_level_irq() and only for oneshot
  * interrupts from handle_fasteoi_irq()
