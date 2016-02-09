@@ -152,13 +152,15 @@ static inline unsigned int titan_pc104_irq_pending(void)
  * PC104/ISA needs servicing and calls those handlers, until
  * the bits are clear..
  */
-static void
-titan_gpio_pc104_handler(unsigned int irq,  struct irq_desc *desc)
+static irqreturn_t
+titan_gpio_pc104_handler(int irq, void* dev_id)
 {
         unsigned int pending = titan_pc104_irq_pending();
 
+        printk(KERN_DEBUG "titan_gpio_pc104_handler, pending=%u\n",
+            pending);
+
         do {
-                desc->irq_data.chip->irq_ack(&desc->irq_data);
                 while (likely(pending)) {
                         int bit = __ffs(pending);
                         irq = titan_bit_to_irq(bit);
@@ -167,6 +169,7 @@ titan_gpio_pc104_handler(unsigned int irq,  struct irq_desc *desc)
                 }
                 pending = titan_pc104_irq_pending();
         } while (pending);
+        return IRQ_HANDLED;
 }
 
 static struct irq_chip titan_pc104_irq_chip = {
@@ -199,6 +202,12 @@ static struct irq_chip titan_pc104_gpio_irq_chip = {
         .irq_unmask     = titan_unmask_pc104_gpio_irq,
 };
 
+static struct irqaction titan_gpio_pc104_irq = {
+        .name           = "GPIO_17-PC104",
+        .flags          = IRQF_VALID,
+        .handler        = titan_gpio_pc104_handler,
+};
+
 static void __init titan_init_irq(void)
 {
 	int level;
@@ -220,18 +229,20 @@ static void __init titan_init_irq(void)
 		printk(KERN_INFO "Map PC104 IRQ %d to IRQ %d\n",
                         titan_isa_irqs[level], isa_irq);
 		irq_set_chip_and_handler(isa_irq, &titan_pc104_irq_chip,
-                        handle_simple_irq);
+                        handle_simple_irq_til_done);
 		set_irq_flags(isa_irq, IRQF_VALID | IRQF_PROBE);
 	}
 
-        printk(KERN_INFO "Titan PC104 GPIO=%d, irq=%d\n",
-                TITAN_ISA_IRQ,PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ));
+        printk(KERN_INFO "Titan PC104 GPIO=%d, irq=%d, nirqs=%d\n",
+                TITAN_ISA_IRQ,PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
+                PXA_NR_IRQS);
         irq_set_chip(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
                 &titan_pc104_gpio_irq_chip); 
-	irq_set_chained_handler(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
-                titan_gpio_pc104_handler);
 	irq_set_irq_type(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
                 IRQ_TYPE_EDGE_RISING);
+	irq_set_chained_handler(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
+                handle_edge_irq);
+        setup_irq(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ), &titan_gpio_pc104_irq);
 }
 
 /*
@@ -362,6 +373,7 @@ static struct platform_device titan_serial_device = {
 	.resource	= titan_serial_resources,
 };
 
+
 #if (CONFIG_ARCOM_TITAN_VER & 1)
 /* DM9000 Ethernet */
 static struct resource titan_dm9000_resource[] = {
@@ -443,7 +455,7 @@ static struct resource titan_sram_resource = {
 
 static struct platform_device titan_sram_device = {
 	.name		= "pxa2xx-8bit-sram",
-	.id		= 0,
+	.id		= -1,
 	.num_resources	= 1,
 	.resource	= &titan_sram_resource,
 };
@@ -730,16 +742,21 @@ static mfp_cfg_t titan_v2_pin_config[] __initdata = {
 static void __init titan_init(void)
 {
         uint32_t mcioval;
+        extern struct resource ioport_resource;
 
 	system_rev = ((TITAN_BOARD_VERSION & 0xFF) << 8) | \
 	             (TITAN_CPLD_VERSION & 0xFF);
 
-	printk("Titan board version : V%dI%d, CPLD version : V%dI%d\n", \
+	printk(KERN_INFO "Titan board version : V%dI%d, CPLD version : V%dI%d\n", \
 	                (system_rev >> 12), ((system_rev>>8) & 0xf),    \
 	                ((system_rev >> 4) & 0xf), system_rev & 0xf    );
 
 	pm_power_off = titan_power_off;
-	
+
+        /* report ioport range */
+	printk(KERN_DEBUG "ioport_resource, start=%#lx, end=%#lx\n",
+            ioport_resource.start, ioport_resource.end);
+
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(common_pin_config));
 #if ((CONFIG_ARCOM_TITAN_VER & 3) == 3)
 	if ((system_rev >> 12) < 2)
@@ -784,6 +801,16 @@ static void __init titan_init(void)
 	pxa_set_i2c_info(NULL);
 	i2c_register_board_info(0, ARRAY_AND_SIZE(titan_i2c_devices));
 
+        /* Adjust timing to DM9000 ethernet, which is on chip select 1,
+         * by tweaking high order bits in MSC0.
+         * See "Intel PXA27x Processor Family Developer's Manual"
+         */
+
+        // mcioval = __raw_readl(MSC0);
+        mcioval = *(unsigned int*) MSC0;
+        printk(KERN_INFO "*MSC0=%#x, CS1 RDFx=%#x RDNx=%#x, RRRx=%#x\n",
+                mcioval,(mcioval >> 20) & 0xf, (mcioval >> 24) & 0xf,
+                (mcioval >> 28) & 0x7);
         /*
          * Adjust PC104 bus timing.  See section 6.5.5 of the
          * "Intel PXA27x Processor Family Developer's Manual", concerning
@@ -802,46 +829,46 @@ static void __init titan_init(void)
          *  MCIO(1)=0x64c99 (HOLD=25,ASST=25,SET=25)
          */
         mcioval = (25 << 14) + (25 << 7) + 25;
-        __raw_writel(mcioval,MCIO(1));
-        // MCIO(1) = mcioval;
-        printk(KERN_INFO "MCIO(1) set to %#x (HOLD=%d,ASST=%d,SET=%d): PC104 bus timing\n",
+        // __raw_writel(mcioval,MCIO(1));
+        *(unsigned int*) MCIO1 = mcioval;
+        printk(KERN_INFO "*MCIO1 set to %#x (HOLD=%d,ASST=%d,SET=%d): PC104 bus timing\n",
                 mcioval,(mcioval % 0xfc000) >> 14, (mcioval & 0xf80) >> 7,
                 (mcioval & 0x7f));
 }
 
 static struct map_desc titan_io_desc[] __initdata = {
 	{
-		.virtual = TITAN_CPLD_P2V(_TITAN_BOARD_VERSION),
+		.virtual = (unsigned long)TITAN_CPLD_P2V(_TITAN_BOARD_VERSION),
 		.pfn     = __phys_to_pfn(_TITAN_BOARD_VERSION),
 		.length  = TITAN_CPLD_REG_VIRT_SIZE,
 		.type    = MT_DEVICE,
 	},
 	{
-		.virtual = TITAN_CPLD_P2V(_TITAN_HI_IRQ_STATUS),
+		.virtual = (unsigned long)TITAN_CPLD_P2V(_TITAN_HI_IRQ_STATUS),
 		.pfn     = __phys_to_pfn(_TITAN_HI_IRQ_STATUS),
 		.length  = TITAN_CPLD_REG_VIRT_SIZE,
 		.type    = MT_DEVICE,
 	},
 	{
-		.virtual = TITAN_CPLD_P2V(_TITAN_CPLD_VERSION),
+		.virtual = (unsigned long)TITAN_CPLD_P2V(_TITAN_CPLD_VERSION),
 		.pfn     = __phys_to_pfn(_TITAN_CPLD_VERSION),
 		.length  = TITAN_CPLD_REG_VIRT_SIZE,
 		.type    = MT_DEVICE,
 	},
 	{
-		.virtual = TITAN_CPLD_P2V(_TITAN_LO_IRQ_STATUS),
+		.virtual = (unsigned long)TITAN_CPLD_P2V(_TITAN_LO_IRQ_STATUS),
 		.pfn     = __phys_to_pfn(_TITAN_LO_IRQ_STATUS),
 		.length  = TITAN_CPLD_REG_VIRT_SIZE,
 		.type    = MT_DEVICE,
 	},
 	{
-		.virtual = TITAN_CPLD_P2V(_TITAN_MISC),
+		.virtual = (unsigned long)TITAN_CPLD_P2V(_TITAN_MISC),
 		.pfn     = __phys_to_pfn(_TITAN_MISC),
 		.length  = TITAN_CPLD_REG_VIRT_SIZE,
 		.type    = MT_DEVICE,
 	},
 	{
-		.virtual = TITAN_PC104IO_BASE,
+		.virtual = (unsigned long)TITAN_PC104IO_BASE,
 		.pfn     = __phys_to_pfn(TITAN_PC104IO_PHYS),
 		.length  = 0x800000,
 		.type    = MT_DEVICE,
