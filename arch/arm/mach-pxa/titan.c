@@ -146,6 +146,13 @@ static inline unsigned int titan_pc104_irq_pending(void)
 			titan_irq_enabled_mask;
 }
 
+static struct irq_chip titan_pc104_irq_chip = {
+	.name           = "PC104",
+        .irq_ack        = titan_ack_pc104_irq,
+	.irq_mask	= titan_mask_pc104_irq,
+	.irq_unmask	= titan_unmask_pc104_irq,
+};
+
 /*
  * High level hander for the TITAN_ISA_IRQ GPIO interrupt.
  * Checks the bits in the interrupt status registers to see what 
@@ -157,8 +164,10 @@ titan_gpio_pc104_handler(int irq, void* dev_id)
 {
         unsigned int pending = titan_pc104_irq_pending();
 
+        /*
         printk(KERN_DEBUG "titan_gpio_pc104_handler, pending=%u\n",
             pending);
+        */
 
         do {
                 while (likely(pending)) {
@@ -171,42 +180,6 @@ titan_gpio_pc104_handler(int irq, void* dev_id)
         } while (pending);
         return IRQ_HANDLED;
 }
-
-static struct irq_chip titan_pc104_irq_chip = {
-	.name           = "PC104",
-        .irq_ack        = titan_ack_pc104_irq,
-	.irq_mask	= titan_mask_pc104_irq,
-	.irq_unmask	= titan_unmask_pc104_irq,
-};
-
-/* Dummy chip functions to avoid WARN_ON() statement
- * in kernel/irq/chip.c, line 701, for the TITAN_ISA_IRQ.  */
-
-/* static unsigned int n_gpio_acks; */
-static void titan_ack_pc104_gpio_irq(struct irq_data *d)
-{
-    /*
-    if (n_gpio_acks++ % 1000) 
-        printk(KERN_INFO "titan_ack_pc104_gpio_irq, nacks=%u\n",
-            n_gpio_acks);
-    */
-}
-
-static void titan_mask_pc104_gpio_irq(struct irq_data *d) {}
-static void titan_unmask_pc104_gpio_irq(struct irq_data *d) {}
-
-static struct irq_chip titan_pc104_gpio_irq_chip = {
-	.name           = "PC104_GPIO",
-        .irq_ack        = titan_ack_pc104_gpio_irq,
-        .irq_mask       = titan_mask_pc104_gpio_irq,
-        .irq_unmask     = titan_unmask_pc104_gpio_irq,
-};
-
-static struct irqaction titan_gpio_pc104_irq = {
-        .name           = "GPIO_17-PC104",
-        .flags          = IRQF_VALID,
-        .handler        = titan_gpio_pc104_handler,
-};
 
 static void __init titan_init_irq(void)
 {
@@ -236,13 +209,30 @@ static void __init titan_init_irq(void)
         printk(KERN_INFO "Titan PC104 GPIO=%d, irq=%d, nirqs=%d\n",
                 TITAN_ISA_IRQ,PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
                 PXA_NR_IRQS);
-        irq_set_chip(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
-                &titan_pc104_gpio_irq_chip); 
+        /* Much of the work to setup this GPIO interrupt is 
+         * done in drivers/gpio/gpio-pxa.c */
 	irq_set_irq_type(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
                 IRQ_TYPE_EDGE_RISING);
-	irq_set_chained_handler(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
-                handle_edge_irq);
-        setup_irq(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ), &titan_gpio_pc104_irq);
+}
+
+/* request the PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ) late in the boot cycle
+ * after the steps in drivers/gpio/gpio-pxa.c have been done.
+ */
+device_initcall(titan_pc104_init);
+
+static int titan_pc104_init(void)
+{
+	int err;
+        err = request_irq(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
+                    titan_gpio_pc104_handler, IRQF_TRIGGER_RISING,
+                    "GPIO_17-PC104", 0);
+	if (err)
+		printk(KERN_ERR "Error %d in request_irq %d for GPIO_17-PC104\n",
+                        err,PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ));
+        else
+		printk(KERN_INFO "Setup TITAN_ISA_IRQ=%d, PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ)=%d\n",
+                        TITAN_ISA_IRQ, PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ));
+        return err;
 }
 
 /*
@@ -911,7 +901,7 @@ static void __init titan_map_io(void)
 MACHINE_START(ARCOM_TITAN, "Eurotech TITAN")
 	/* Maintainer: Eurotech Ltd. */
 	.map_io		= titan_map_io,
-        .nr_irqs        = PXA_NR_IRQS,
+        .nr_irqs        = TITAN_NR_IRQS,
 	.init_irq	= titan_init_irq,
         .handle_irq     = pxa27x_handle_irq,
 	.init_time	= pxa_timer_init,

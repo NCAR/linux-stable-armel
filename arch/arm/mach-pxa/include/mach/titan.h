@@ -86,4 +86,6 @@
  * See drivers/mtd/maps/pxa2xx_8bit_sram.c for specifics */
 #define TITAN_SRAM_SIZE		(256 * 2 * 1024)
 
+#define TITAN_NR_IRQS	(IRQ_BOARD_START)
+
 #endif
