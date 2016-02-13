@@ -79,6 +79,8 @@
 static unsigned int titan_irq_enabled_mask;
 static const int titan_isa_irqs[] = { 3, 4, 5, 6, 7, 10, 11, 12, 9, 14, 15 };
 static const int titan_isa_irq_map[] = {
+        /* ISA irqs 3-7,10-12 are in TITAN_LO_IRQ_STATUS byte
+         * 9,14,15 are in TITAN_HI_IRQ_STATUS */
 	0,		/* ISA irq #0, invalid */
 	0,		/* ISA irq #1, invalid */
 	0,		/* ISA irq #2, invalid */
@@ -142,8 +144,8 @@ static void titan_unmask_pc104_irq(struct irq_data *d)
 
 static inline unsigned int titan_pc104_irq_pending(void)
 {
-	return (TITAN_HI_IRQ_STATUS << 8 | TITAN_LO_IRQ_STATUS) &
-			titan_irq_enabled_mask;
+        return (TITAN_HI_IRQ_STATUS << 8 | TITAN_LO_IRQ_STATUS) &
+                titan_irq_enabled_mask;
 }
 
 static struct irq_chip titan_pc104_irq_chip = {
@@ -157,17 +159,23 @@ static struct irq_chip titan_pc104_irq_chip = {
  * High level hander for the TITAN_ISA_IRQ GPIO interrupt.
  * Checks the bits in the interrupt status registers to see what 
  * PC104/ISA needs servicing and calls those handlers, until
- * the bits are clear..
+ * the pending bits are clear..
  */
 static irqreturn_t
 titan_gpio_pc104_handler(int irq, void* dev_id)
 {
         unsigned int pending = titan_pc104_irq_pending();
 
-        /*
-        printk(KERN_DEBUG "titan_gpio_pc104_handler, pending=%u\n",
-            pending);
-        */
+        static unsigned int npending0;
+        static unsigned int ntotal;
+
+        ntotal++;
+        if (!pending) {
+                if (!((npending0++) % 100))
+                        printk(KERN_INFO "Warning: pending=%#x (mask=%#x) in titan_gpio_pc104_handler (%u times out of %u)\n",
+                                pending, titan_irq_enabled_mask, npending0, ntotal);
+                pending = titan_irq_enabled_mask;
+        }
 
         do {
                 while (likely(pending)) {
@@ -188,6 +196,11 @@ static void __init titan_init_irq(void)
 
 	pxa27x_init_irq();
 
+        /*
+         * Much of the configuration of the GPIOs and their associated IRQs is
+         * done by pxa_gpio_init in drivers/gpio/gpio-pxa.c.
+         */
+
 	/* Peripheral IRQs */
 	irq_set_irq_type(PXA_GPIO_TO_IRQ(TITAN_AC97_GPIO),	IRQ_TYPE_EDGE_RISING);
 	irq_set_irq_type(PXA_GPIO_TO_IRQ(TITAN_WAKEUP_GPIO),	IRQ_TYPE_EDGE_FALLING);
@@ -201,25 +214,26 @@ static void __init titan_init_irq(void)
 		isa_irq = titan_bit_to_irq(level);
 		printk(KERN_INFO "Map PC104 IRQ %d to IRQ %d\n",
                         titan_isa_irqs[level], isa_irq);
+#ifdef GO_TIL_DONE
 		irq_set_chip_and_handler(isa_irq, &titan_pc104_irq_chip,
                         handle_simple_irq_til_done);
+#else
+		irq_set_chip_and_handler(isa_irq, &titan_pc104_irq_chip,
+                        handle_simple_irq);
+#endif
 		set_irq_flags(isa_irq, IRQF_VALID | IRQF_PROBE);
 	}
 
         printk(KERN_INFO "Titan PC104 GPIO=%d, irq=%d, nirqs=%d\n",
                 TITAN_ISA_IRQ,PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
                 PXA_NR_IRQS);
-        /* Much of the work to setup this GPIO interrupt is 
-         * done in drivers/gpio/gpio-pxa.c */
 	irq_set_irq_type(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
                 IRQ_TYPE_EDGE_RISING);
 }
 
-/* request the PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ) late in the boot cycle
- * after the steps in drivers/gpio/gpio-pxa.c have been done.
+/*
+ * Request interrupt (129) for the the TITAN_ISA_IRQ GPIO (17).
  */
-device_initcall(titan_pc104_init);
-
 static int titan_pc104_init(void)
 {
 	int err;
@@ -227,13 +241,19 @@ static int titan_pc104_init(void)
                     titan_gpio_pc104_handler, IRQF_TRIGGER_RISING,
                     "GPIO_17-PC104", 0);
 	if (err)
-		printk(KERN_ERR "Error %d in request_irq %d for GPIO_17-PC104\n",
-                        err,PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ));
+		printk(KERN_ERR "Error %d in request_irq of IRQ %d for PC104 CPLD on GPIO %d\n",
+                        err, PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ), TITAN_ISA_IRQ);
         else
-		printk(KERN_INFO "Setup TITAN_ISA_IRQ=%d, PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ)=%d\n",
-                        TITAN_ISA_IRQ, PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ));
+		printk(KERN_INFO "Setup IRQ %d for PC104 CPLD on GPIO %d\n",
+                        PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ), TITAN_ISA_IRQ);
         return err;
 }
+
+/*
+ * Request the interrupt for the TITAN_ISA_IRQ GPIO late in the boot sequence,
+ * after the postcore_initcall(pxa_gpio_init) in drivers/gpio/gpio-pxa.c has been done.
+ */
+device_initcall(titan_pc104_init);
 
 /*
  * Platform devices
@@ -731,7 +751,7 @@ static mfp_cfg_t titan_v2_pin_config[] __initdata = {
 
 static void __init titan_init(void)
 {
-        uint32_t mcioval;
+        uint32_t u32val, u32val2;
         extern struct resource ioport_resource;
 
 	system_rev = ((TITAN_BOARD_VERSION & 0xFF) << 8) | \
@@ -744,8 +764,8 @@ static void __init titan_init(void)
 	pm_power_off = titan_power_off;
 
         /* report ioport range */
-	printk(KERN_DEBUG "ioport_resource, start=%#lx, end=%#lx\n",
-            ioport_resource.start, ioport_resource.end);
+	printk(KERN_DEBUG "ioport_resource, start=%#zx, end=%#zx\n",
+                ioport_resource.start, ioport_resource.end);
 
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(common_pin_config));
 #if ((CONFIG_ARCOM_TITAN_VER & 3) == 3)
@@ -791,16 +811,32 @@ static void __init titan_init(void)
 	pxa_set_i2c_info(NULL);
 	i2c_register_board_info(0, ARRAY_AND_SIZE(titan_i2c_devices));
 
-        /* Adjust timing to DM9000 ethernet, which is on chip select 1,
+#if (CONFIG_ARCOM_TITAN_VER & 1)
+        /* Adjust timing to DM9000 ethernet chip, which is on chip select 1,
          * by tweaking high order bits in MSC0.
+         * Default values result in "status check fail: 210" errors from the dm9000 driver.
+         *
          * See "Intel PXA27x Processor Family Developer's Manual"
+         *
+         * Default values (apparently set in RedBoot) were (as shown by pxaregs program):
+         * MSC0=0xe25924e8
+         * MSC0_RT1                          1  nCS[1] ROM Type
+         * MSC0_RBW1                         1  nCS[1] ROM Bus Width (1=16bit)
+         * MSC0_RDF1                         5  nCS[1] ROM Delay First Access
+         * MSC0_RDN1                         2  nCS[1] ROM Delay Next Access
+         * MSC0_RRR1                         6  nCS[1] ROM/SRAM Recovery Time
+         * MSC0_RBUFF1                       1  nCS[1] Return Buffer Behavior (1=streaming)
+         *
+         * Experimenting indicates that increasing RDF1 to 7 from 5 fixes the problem.
+         * pxaregs program is very handy for testing these values at runtime.
          */
-
-        // mcioval = __raw_readl(MSC0);
-        mcioval = *(unsigned int*) MSC0;
-        printk(KERN_INFO "*MSC0=%#x, CS1 RDFx=%#x RDNx=%#x, RRRx=%#x\n",
-                mcioval,(mcioval >> 20) & 0xf, (mcioval >> 24) & 0xf,
-                (mcioval >> 28) & 0x7);
+        u32val = *(unsigned int*) MSC0;
+        *(unsigned int*) MSC0 = (u32val & 0xff0fffff) | 0x00700000;
+        u32val2 = *(unsigned int*) MSC0;
+        printk(KERN_INFO "*MSC0 changed from %#x to %#x, CS1 RDFx=%#x RDNx=%#x, RRRx=%#x\n",
+                u32val, u32val2, (u32val2 >> 20) & 0xf, (u32val2 >> 24) & 0xf,
+                (u32val2 >> 28) & 0x7);
+#endif
         /*
          * Adjust PC104 bus timing.  See section 6.5.5 of the
          * "Intel PXA27x Processor Family Developer's Manual", concerning
@@ -818,12 +854,11 @@ static void __init titan_init(void)
          * Emerald 8P PC104 serial card. Increasing values to 25 is necessary:
          *  MCIO(1)=0x64c99 (HOLD=25,ASST=25,SET=25)
          */
-        mcioval = (25 << 14) + (25 << 7) + 25;
-        // __raw_writel(mcioval,MCIO(1));
-        *(unsigned int*) MCIO1 = mcioval;
+        u32val = (25 << 14) + (25 << 7) + 25;
+        *(unsigned int*) MCIO1 = u32val;
         printk(KERN_INFO "*MCIO1 set to %#x (HOLD=%d,ASST=%d,SET=%d): PC104 bus timing\n",
-                mcioval,(mcioval % 0xfc000) >> 14, (mcioval & 0xf80) >> 7,
-                (mcioval & 0x7f));
+                u32val,(u32val % 0xfc000) >> 14, (u32val & 0xf80) >> 7,
+                (u32val & 0x7f));
 }
 
 static struct map_desc titan_io_desc[] __initdata = {
@@ -896,7 +931,6 @@ static void __init titan_map_io(void)
 	 * float chip selects */
 	PCFR = PCFR_OPDE | PCFR_DC_EN | PCFR_FS;
 }
-
 
 MACHINE_START(ARCOM_TITAN, "Eurotech TITAN")
 	/* Maintainer: Eurotech Ltd. */
