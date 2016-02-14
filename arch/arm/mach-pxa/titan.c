@@ -166,14 +166,19 @@ titan_gpio_pc104_handler(int irq, void* dev_id)
 {
         unsigned int pending = titan_pc104_irq_pending();
 
+#ifdef TITAN_PC104_DEBUG
         static unsigned int npending0;
         static unsigned int ntotal;
-
         ntotal++;
+#endif
+
         if (!pending) {
-                if (!((npending0++) % 100))
+
+#ifdef TITAN_PC104_DEBUG
+                if (!((npending0++) % 1000))
                         printk(KERN_INFO "Warning: pending=%#x (mask=%#x) in titan_gpio_pc104_handler (%u times out of %u)\n",
                                 pending, titan_irq_enabled_mask, npending0, ntotal);
+#endif
                 pending = titan_irq_enabled_mask;
         }
 
@@ -226,7 +231,7 @@ static void __init titan_init_irq(void)
 
         printk(KERN_INFO "Titan PC104 GPIO=%d, irq=%d, nirqs=%d\n",
                 TITAN_ISA_IRQ,PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
-                PXA_NR_IRQS);
+                TITAN_NR_IRQS);
 	irq_set_irq_type(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
                 IRQ_TYPE_EDGE_RISING);
 }
