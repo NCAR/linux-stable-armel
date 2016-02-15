@@ -131,6 +131,20 @@ config HAVE_PROC_CPU
 config NO_IOPORT_MAP
 	bool
 
+config IOPORT_VIRT_BASE
+	hex
+        default 0xf1000000 if MACH_ARCOM_TITAN || ARCH_VIPER
+        default 0x0
+	help
+	  The virtual base address of ISA ioports.
+
+config IOPORT_REGION_SIZE
+	hex
+        default 0x3ff if MACH_ARCOM_TITAN || ARCH_VIPER
+        default 0xfffff
+	help
+	  The size of the ioport address region.
+
 config EISA
 	bool
 	---help---
