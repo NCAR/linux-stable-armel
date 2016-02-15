@@ -78,7 +78,7 @@
 
 static unsigned int titan_irq_enabled_mask;
 static const int titan_isa_irqs[] = { 3, 4, 5, 6, 7, 10, 11, 12, 9, 14, 15 };
-static const int titan_isa_irq_map[] = {
+static const unsigned int titan_isa_irq_map[] = {
         /* ISA irqs 3-7,10-12 are in TITAN_LO_IRQ_STATUS byte
          * 9,14,15 are in TITAN_HI_IRQ_STATUS */
 	0,		/* ISA irq #0, invalid */
@@ -99,7 +99,7 @@ static const int titan_isa_irq_map[] = {
 	1 << 10,	/* ISA irq #15 */
 };
 
-static inline int titan_irq_to_bitmask(unsigned int irq)
+static inline unsigned int titan_irq_to_bitmask(unsigned int irq)
 {
 	return titan_isa_irq_map[irq - PXA_ISA_IRQ(0)];
 }
@@ -115,22 +115,12 @@ static inline int titan_bit_to_irq(int bit)
  *     the IRQ signal low. When the TITAN hardware sees the interrupt
  *     go low the corresponding bit is automatically cleared from the
  *     I1_REG or I2_REG register.
- * Therefore, setting this bit in the TITAN_CPLD_ISA_IRQ register
- * is unnecessary, hence NEED_TO_ACK_TITAN_PC104_IRQ is not defined.
+ * In 2.6.35 kernel code for the Titan, the IRQ ack function wrote a one
+ * to the appropriate IRQ bit in TITAN_LO_IRQ_STATUS or TITAN_HI_IRQ_STATUS,
+ * which according to the above, seems unnecessary. Testing indicates that
+ * it has no effect.
  */
-#ifdef NEED_TO_ACK_TITAN_PC104_IRQ
-static void titan_ack_pc104_irq(struct irq_data *d)
-{
-        int titan_irq = titan_irq_to_bitmask(d->irq);
-
-        if (titan_irq & 0xff)
-                TITAN_LO_IRQ_STATUS = titan_irq;
-        else
-                TITAN_HI_IRQ_STATUS = (titan_irq >> 8);
-}
-#else
 static void titan_ack_pc104_irq(struct irq_data *d) {}
-#endif
 
 static void titan_mask_pc104_irq(struct irq_data *d)
 {
@@ -164,18 +154,33 @@ static struct irq_chip titan_pc104_irq_chip = {
 static irqreturn_t
 titan_gpio_pc104_handler(int irq, void* dev_id)
 {
-        unsigned int pending = titan_pc104_irq_pending();
+        unsigned int pending;
 
+// #define TITAN_PC104_DEBUG
 #ifdef TITAN_PC104_DEBUG
         static unsigned int npending0;
         static unsigned int ntotal;
+        static unsigned int npendingdiff;
+        unsigned int pending2;
+#endif
+
+        pending = titan_pc104_irq_pending();
+
+#ifdef TITAN_PC104_DEBUG
         ntotal++;
+        pending2 = titan_pc104_irq_pending();
+
+        if (pending != pending2) {
+                if (!((npendingdiff++) % 100))
+                        printk(KERN_INFO "pending=%#x (mask=%#x) != pending2=%#x in titan_gpio_pc104_handler (%u times out of %u)\n",
+                                pending, titan_irq_enabled_mask, pending2, npendingdiff, ntotal);
+        }
 #endif
 
         if (!pending) {
 
 #ifdef TITAN_PC104_DEBUG
-                if (!((npending0++) % 1000))
+                if (!((npending0++) % 100))
                         printk(KERN_INFO "Warning: pending=%#x (mask=%#x) in titan_gpio_pc104_handler (%u times out of %u)\n",
                                 pending, titan_irq_enabled_mask, npending0, ntotal);
 #endif
@@ -187,9 +192,18 @@ titan_gpio_pc104_handler(int irq, void* dev_id)
                         int bit = __ffs(pending);
                         irq = titan_bit_to_irq(bit);
 			generic_handle_irq(irq);
-                        pending &= ~(1 << bit);
+                        pending &= ~titan_irq_to_bitmask(irq);
                 }
                 pending = titan_pc104_irq_pending();
+#ifdef TITAN_PC104_DEBUG
+                pending2 = titan_pc104_irq_pending();
+
+                if (pending != pending2) {
+                        if (!((npendingdiff++) % 100))
+                                printk(KERN_INFO "pending=%#x (mask=%#x) != pending2=%#x in titan_gpio_pc104_handler (%u times out of %u)\n",
+                                        pending, titan_irq_enabled_mask, pending2, npendingdiff, ntotal);
+                }
+#endif
         } while (pending);
         return IRQ_HANDLED;
 }
