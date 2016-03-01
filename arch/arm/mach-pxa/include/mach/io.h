@@ -13,7 +13,7 @@
 #endif
 
 #if defined(CONFIG_IOPORT_VIRT_BASE)
-#define __io(a)         __typesafe_io(CONFIG_IOPORT_VIRT_BASE + ((a) & IO_SPACE_LIMIT))
+#define __io(a)         __typesafe_io(((a) & 0xfffff000) ? (a) : CONFIG_IOPORT_VIRT_BASE + ((a) & IO_SPACE_LIMIT))
 #else
 /*
  * We don't actually have real ISA nor PCI buses, but there is so many

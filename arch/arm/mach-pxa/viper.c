@@ -50,8 +50,10 @@
 #include <mach/audio.h>
 #include <linux/platform_data/video-pxafb.h>
 #include <mach/regs-uart.h>
+#include <mach/pxa2xx-regs.h>
 #include <linux/platform_data/pcmcia-pxa2xx_viper.h>
 #include <mach/viper.h>
+#include <mach/smemc.h> /* MSCn */
 
 #include <asm/setup.h>
 #include <asm/mach-types.h>
@@ -219,7 +221,7 @@ static void viper_set_core_cpu_voltage(unsigned long khz, int force)
 }
 
 /* Interrupt handling */
-static unsigned long viper_irq_enabled_mask;
+static unsigned int viper_irq_enabled_mask;
 static const int viper_isa_irqs[] = { 3, 4, 5, 6, 7, 10, 11, 12, 9, 14, 15 };
 static const int viper_isa_irq_map[] = {
 	0,		/* ISA irq #0, invalid */
@@ -250,7 +252,7 @@ static inline int viper_bit_to_irq(int bit)
 	return viper_isa_irqs[bit] + PXA_ISA_IRQ(0);
 }
 
-static void viper_ack_irq(struct irq_data *d)
+static void viper_ack_pc104_irq(struct irq_data *d)
 {
 	int viper_irq = viper_irq_to_bitmask(d->irq);
 
@@ -260,45 +262,51 @@ static void viper_ack_irq(struct irq_data *d)
 		VIPER_HI_IRQ_STATUS = (viper_irq >> 8);
 }
 
-static void viper_mask_irq(struct irq_data *d)
+static void viper_mask_pc104_irq(struct irq_data *d)
 {
 	viper_irq_enabled_mask &= ~(viper_irq_to_bitmask(d->irq));
 }
 
-static void viper_unmask_irq(struct irq_data *d)
+static void viper_unmask_pc104_irq(struct irq_data *d)
 {
 	viper_irq_enabled_mask |= viper_irq_to_bitmask(d->irq);
 }
 
-static inline unsigned long viper_irq_pending(void)
+static inline unsigned int viper_pc104_irq_pending(void)
 {
 	return (VIPER_HI_IRQ_STATUS << 8 | VIPER_LO_IRQ_STATUS) &
 			viper_irq_enabled_mask;
 }
 
-static void viper_irq_handler(unsigned int irq, struct irq_desc *desc)
+static irqreturn_t
+viper_gpio_pc104_irq_handler(int irq, void* devid)
 {
-	unsigned long pending;
+	unsigned int pending;
 
-	pending = viper_irq_pending();
+	pending = viper_pc104_irq_pending();
+        if (!pending) pending = viper_irq_enabled_mask;
+        /*
+        printk(KERN_INFO "pc104_irq_handler, irq=%d, pending=%#x\n",
+                irq, pending);
+        */
+
 	do {
-		/* we're in a chained irq handler,
-		 * so ack the interrupt by hand */
-		desc->irq_data.chip->irq_ack(&desc->irq_data);
-
-		if (likely(pending)) {
-			irq = viper_bit_to_irq(__ffs(pending));
+		while (likely(pending)) {
+                        int bit = __ffs(pending);
+                        irq = viper_bit_to_irq(bit);
 			generic_handle_irq(irq);
+                        pending &= ~viper_irq_to_bitmask(irq);
 		}
-		pending = viper_irq_pending();
+		pending = viper_pc104_irq_pending();
 	} while (pending);
+        return IRQ_HANDLED;
 }
 
-static struct irq_chip viper_irq_chip = {
-	.name		= "ISA",
-	.irq_ack	= viper_ack_irq,
-	.irq_mask	= viper_mask_irq,
-	.irq_unmask	= viper_unmask_irq
+static struct irq_chip viper_pc104_irq_chip = {
+	.name		= "PC104",
+	.irq_ack	= viper_ack_pc104_irq,
+	.irq_mask	= viper_mask_pc104_irq,
+	.irq_unmask	= viper_unmask_pc104_irq
 };
 
 static void __init viper_init_irq(void)
@@ -308,18 +316,53 @@ static void __init viper_init_irq(void)
 
 	pxa25x_init_irq();
 
+	/* Peripheral IRQs */
+        irq_set_irq_type(PXA_GPIO_TO_IRQ(VIPER_ETH_GPIO), IRQ_TYPE_EDGE_RISING);
+        irq_set_irq_type(PXA_GPIO_TO_IRQ(VIPER_USB_GPIO), IRQ_TYPE_EDGE_FALLING);
+	irq_set_irq_type(PXA_GPIO_TO_IRQ(VIPER_UARTA_GPIO), IRQ_TYPE_EDGE_RISING);
+	irq_set_irq_type(PXA_GPIO_TO_IRQ(VIPER_UARTB_GPIO), IRQ_TYPE_EDGE_RISING);
+	// irq_set_irq_type(PXA_GPIO_TO_IRQ(GPIO8_GPIO), IRQ_TYPE_EDGE_BOTH);
+	// irq_set_irq_type(PXA_GPIO_TO_IRQ(GPIO14_GPIO), IRQ_TYPE_EDGE_BOTH);
+	// irq_set_irq_type(PXA_GPIO_TO_IRQ(GPIO32_GPIO), IRQ_TYPE_EDGE_FALLING);
+
 	/* setup ISA IRQs */
 	for (level = 0; level < ARRAY_SIZE(viper_isa_irqs); level++) {
 		isa_irq = viper_bit_to_irq(level);
-		irq_set_chip_and_handler(isa_irq, &viper_irq_chip,
-					 handle_edge_irq);
+		irq_set_chip_and_handler(isa_irq, &viper_pc104_irq_chip,
+					 handle_simple_irq);
 		set_irq_flags(isa_irq, IRQF_VALID | IRQF_PROBE);
 	}
 
-	irq_set_chained_handler(gpio_to_irq(VIPER_CPLD_GPIO),
-				viper_irq_handler);
-	irq_set_irq_type(gpio_to_irq(VIPER_CPLD_GPIO), IRQ_TYPE_EDGE_BOTH);
+        printk(KERN_INFO "Viper PC104 GPIO=%d, irq=%d, nirqs=%d\n",
+                VIPER_CPLD_GPIO,PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO),
+                VIPER_NR_IRQS);
+
+	irq_set_irq_type(PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO), IRQ_TYPE_EDGE_BOTH);
 }
+
+/*
+ * Request interrupt (113) for the the VIPER_CPLD_GPIO (1).
+ */
+static int viper_pc104_init(void)
+{
+        int err;
+        err = request_irq(PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO),
+                    viper_gpio_pc104_irq_handler, IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
+                    "GPIO1-PC104", 0);
+        if (err)
+                printk(KERN_ERR "Error %d in request_irq of IRQ %d for PC104 CPLD on GPIO %d\n",
+                        err, PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO), VIPER_CPLD_GPIO);
+        else
+                printk(KERN_INFO "Setup IRQ %d for PC104 CPLD on GPIO %d\n",
+                        PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO), VIPER_CPLD_GPIO);
+        return err;
+}
+
+/*
+ * Request the interrupt for the VIPER_CPLD_GPIO late in the boot sequence,
+ * after the postcore_initcall(pxa_gpio_init) in drivers/gpio/gpio-pxa.c has been done.
+ */
+device_initcall(viper_pc104_init);
 
 /* Flat Panel */
 static struct pxafb_mode_info fb_mode_info[] = {
@@ -482,7 +525,6 @@ static struct i2c_board_info __initdata viper_i2c_devices[] = {
  */
 
 static struct resource viper_serial_resources[] = {
-#ifndef CONFIG_SERIAL_PXA
 	{
 		.start	= 0x40100000,
 		.end	= 0x4010001f,
@@ -508,11 +550,6 @@ static struct resource viper_serial_resources[] = {
 		.end	= VIPER_UARTB_PHYS + 0xf,
 		.flags	= IORESOURCE_MEM,
 	},
-#else
-	{
-		0,
-	},
-#endif
 };
 
 static struct plat_serial8250_port serial_platform_data[] = {
@@ -580,10 +617,34 @@ static struct platform_device serial_device = {
 	.resource		= viper_serial_resources,
 };
 
-/* USB */
+/*
+ * USB
+ * Define a delay function for the isp116x. See include/linux/usb-isp116x.h 
+ * TODO: look into adjusing the bus timing with the pxa registers
+ */
 static void isp116x_delay(struct device *dev, int delay)
 {
+
+#if 1
+        /* On this platform, we work with 200MHz clock, giving
+           5 ns per instruction. The cycle below involves 2
+           instructions and we lose 2 more instruction times due
+           to pipeline flush at a jump. I.e., we consume 20 ns
+           per cycle.
+
+           At 400 MHz, there are 10 ns per cycle.
+        */
+        int cyc = delay/10 + 1;
+
+        __asm__ volatile ("0:\n"
+                          "     subs  %0, %1, #1\n"
+                          "     bge   0b\n"
+                          : "=r" (cyc)
+                          : "0"  (cyc)
+                );
+#else
 	ndelay(delay);
+#endif
 }
 
 static struct resource isp116x_resources[] = {
@@ -698,12 +759,12 @@ static struct platform_device viper_mtd_devices[] = {
 
 static struct platform_device *viper_devs[] __initdata = {
 	&smc91x_device,
-	&i2c_bus_device,
+	// &i2c_bus_device,
 	&serial_device,
 	&isp116x_device,
 	&viper_mtd_devices[0],
 	&viper_mtd_devices[1],
-	&viper_backlight_device,
+	/*  &viper_backlight_device, */
 	&viper_pcmcia_device,
 };
 
@@ -745,24 +806,36 @@ static mfp_cfg_t viper_pin_config[] __initdata = {
 	GPIO57_nIOIS16,
 	GPIO8_GPIO,				/* VIPER_CF_RDY_GPIO */
 	GPIO32_GPIO,				/* VIPER_CF_CD_GPIO */
-	GPIO82_GPIO,				/* VIPER_CF_POWER_GPIO */
+	MFP_CFG_OUT(GPIO82, AF0, DRIVE_LOW),    /* VIPER_CF_POWER_GPIO */
 
 	/* Integrated UPS control */
-	GPIO20_GPIO,				/* VIPER_UPS_GPIO */
+	GPIO20_GPIO,                            /* VIPER_UPS_GPIO */
 
 	/* Vcc regulator control */
-	GPIO6_GPIO,				/* VIPER_PSU_DATA_GPIO */
-	GPIO11_GPIO,				/* VIPER_PSU_CLK_GPIO */
-	GPIO19_GPIO,				/* VIPER_PSU_nCS_LD_GPIO */
+	GPIO6_PSU_DATA,				/* VIPER_PSU_DATA_GPIO */
+	GPIO11_PSU_CLK,				/* VIPER_PSU_CLK_GPIO */
+	GPIO19_PSU_nCS_LD,			/* VIPER_PSU_nCS_LD_GPIO */
+
+        /* outputs on PL9 */
+        GPIO20_OUT,                             /* also used for UPS */
+        GPIO21_OUT,
+        GPIO22_OUT,
+        GPIO23_OUT,
+        GPIO24_OUT,
+        GPIO25_OUT,
+        GPIO26_OUT,
+        GPIO27_OUT,
 
 	/* i2c busses */
+#ifdef HAS_TPM
 	GPIO26_GPIO,				/* VIPER_TPM_I2C_SDA_GPIO */
 	GPIO27_GPIO,				/* VIPER_TPM_I2C_SCL_GPIO */
+#endif
 	GPIO83_GPIO,				/* VIPER_RTC_I2C_SDA_GPIO */
 	GPIO84_GPIO,				/* VIPER_RTC_I2C_SCL_GPIO */
 
 	/* PC/104 Interrupt */
-	GPIO1_GPIO | WAKEUP_ON_EDGE_RISE,	/* VIPER_CPLD_GPIO */
+	GPIO1_GPIO | WAKEUP_ON_EDGE_RISE, 	/* VIPER_CPLD_GPIO */
 };
 
 static unsigned long viper_tpm;
@@ -917,6 +990,7 @@ static void viper_power_off(void)
 
 static void __init viper_init(void)
 {
+        uint32_t u32val, u32val2;
 	u8 version;
 
 	pm_power_off = viper_power_off;
@@ -930,7 +1004,9 @@ static void __init viper_init(void)
 	/* Wake-up serial console */
 	viper_init_serial_gpio();
 
+#ifdef DO_FB
 	pxa_set_fb_info(NULL, &fb_info);
+#endif
 
 	/* v1 hardware cannot use the datacs line */
 	version = viper_hw_version();
@@ -957,6 +1033,31 @@ static void __init viper_init(void)
 	} else {
 		pr_info("viper: No version register.\n");
 	}
+
+        /* Adjust timing to isp116x USB interface, which is on chip select 3,
+         * by tweaking high order bits in MSC1, in order to avoid using a
+         * busy delay in the driver. See discussion of USE_PLATFORM_DELAY
+         * and USE_NDELAY in isp116x.h and isp116x-hcd.c (drivers/usb/host).
+         *
+         * See "Intel PXA255 Processor Developer's Manual" for info on the MSCn registers.
+         *
+         * Default values (apparently set in RedBoot) were (as shown by pxaregs program):
+         * MSC1=0x44fc123c
+         * MSC1_RT3                          4  nCS[3] ROM Type
+         * MSC1_RBW3                         1  nCS[3] ROM Bus Width (1=16bit)
+         * MSC1_RDF3                        15  nCS[3] ROM Delay First Access
+         * MSC1_RDN3                         4  nCS[3] ROM Delay Next Access
+         * MSC1_RRR3                         4  nCS[3] ROM/SRAM Recovery Time
+         * MSC1_RBUFF3                       0  nCS[3] Return Buffer Behavior (1=streaming)
+         *
+         * Initial test: increase to maximums: MSC1_RDN3 to 15, and MSC1_RRR3 to 7
+         */
+        u32val = *(unsigned int*) MSC1;
+        *(unsigned int*) MSC1 = (u32val & 0x0000ffff) | 0x7ffc0000;
+        u32val2 = *(unsigned int*) MSC1;
+        printk(KERN_INFO "*MSC1 changed from %#x to %#x, CS3 RDFx=%#x RDNx=%#x, RRRx=%#x\n",
+                u32val, u32val2, (u32val2 >> 20) & 0xf, (u32val2 >> 24) & 0xf,
+                (u32val2 >> 28) & 0x7);
 
 	i2c_register_board_info(1, ARRAY_AND_SIZE(viper_i2c_devices));
 
@@ -990,12 +1091,12 @@ static void __init viper_map_io(void)
 
 MACHINE_START(VIPER, "Arcom/Eurotech VIPER SBC")
 	/* Maintainer: Marc Zyngier <maz@misterjones.org> */
-	.atag_offset	= 0x100,
 	.map_io		= viper_map_io,
-	.nr_irqs	= PXA_NR_IRQS,
+	.nr_irqs	= VIPER_NR_IRQS,
 	.init_irq	= viper_init_irq,
 	.handle_irq	= pxa25x_handle_irq,
 	.init_time	= pxa_timer_init,
 	.init_machine	= viper_init,
 	.restart	= pxa_restart,
 MACHINE_END
+

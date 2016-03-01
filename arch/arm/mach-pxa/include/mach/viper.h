@@ -47,11 +47,33 @@
 #define VIPER_BRIGHTNESS_GPIO	(16)
 #define VIPER_PSU_nCS_LD_GPIO	(19)
 #define VIPER_UPS_GPIO		(20)
+#define VIPER_PL9_OUT0          (20)
+#define VIPER_PL9_OUT1          (21)
+#define VIPER_PL9_OUT2          (22)
+#define VIPER_PL9_OUT3          (23)
+#define VIPER_PL9_OUT4          (24)
+#define VIPER_PL9_OUT5          (25)
+#define VIPER_PL9_OUT6          (26)
+#define VIPER_PL9_OUT7          (27)
 #define VIPER_CF_POWER_GPIO	(82)
 #define VIPER_TPM_I2C_SDA_GPIO	(26)
 #define VIPER_TPM_I2C_SCL_GPIO	(27)
 #define VIPER_RTC_I2C_SDA_GPIO	(83)
 #define VIPER_RTC_I2C_SCL_GPIO	(84)
+
+/* GPIO pins for Viper processor power management */
+#define GPIO6_PSU_DATA          MFP_CFG_OUT(GPIO6,AF0,DRIVE_LOW)
+#define GPIO11_PSU_CLK          MFP_CFG_OUT(GPIO11,AF0,DRIVE_LOW)
+#define GPIO19_PSU_nCS_LD       MFP_CFG_OUT(GPIO19,AF0,DRIVE_LOW)
+/* outputs on PL9 */
+#define GPIO20_OUT             MFP_CFG_OUT(GPIO20,AF0,DRIVE_LOW)
+#define GPIO21_OUT             MFP_CFG_OUT(GPIO21,AF0,DRIVE_LOW)
+#define GPIO22_OUT             MFP_CFG_OUT(GPIO22,AF0,DRIVE_LOW)
+#define GPIO23_OUT             MFP_CFG_OUT(GPIO23,AF0,DRIVE_LOW)
+#define GPIO24_OUT             MFP_CFG_OUT(GPIO24,AF0,DRIVE_LOW)
+#define GPIO25_OUT             MFP_CFG_OUT(GPIO25,AF0,DRIVE_LOW)
+#define GPIO26_OUT             MFP_CFG_OUT(GPIO26,AF0,DRIVE_LOW)
+#define GPIO27_OUT             MFP_CFG_OUT(GPIO27,AF0,DRIVE_LOW)
 
 #define VIPER_CPLD_P2V(x)	((x) - VIPER_CPLD_PHYS + VIPER_CPLD_BASE)
 #define VIPER_CPLD_V2P(x)	((x) - VIPER_CPLD_BASE + VIPER_CPLD_PHYS)
@@ -89,6 +111,9 @@
 #define VIPER_ICR_AUTO_CLR	(1 << 1)
 #define VIPER_ICR_R_DIS		(1 << 2)
 #define VIPER_ICR_CF_RST	(1 << 3)
+
+/* 85 GPIOs on PXA25x */
+#define VIPER_NR_IRQS	(PXA_GPIO_IRQ_BASE + 85)
 
 #endif
 
