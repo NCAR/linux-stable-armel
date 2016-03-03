@@ -45,7 +45,7 @@
   3. Use ndelay (easiest, poorest). For that, uncomment
   the following USE_NDELAY macro.
 */
-#define USE_PLATFORM_DELAY
+//#define USE_PLATFORM_DELAY
 //#define USE_NDELAY
 
 //#define DEBUG
