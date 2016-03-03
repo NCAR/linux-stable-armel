@@ -68,18 +68,31 @@
 #include "generic.h"
 #include "devices.h"
 
-static unsigned int icr;
+/*
+ * See section titled "PC/104 Interrupts" in the Viper Technical Manual.
+ * Interrupts can work in either of two modes:
+ * Linux/VxWorks: leave AUTO_CLR and RETRIG bits in the
+ *  interrupt control register at their default 0 value.
+ *  GPIO1 then toggles on each interrupt.
+ * Windows: set AUTO_CLR bit in interrupt control register, and set
+ *  RETRIG bit after handling the interrupt.
+ *  GPIO1 then goes low when the interrupt is serviced, and setting
+ *  the RETRIG bit will cause it go to high again.
+ */
+#define VIPER_IRQ_AUTOCLR_RETRIG
 
-static void viper_icr_set_bit(unsigned int bit)
+static unsigned short pc104_icr;
+
+static void viper_icr_set_bit(unsigned short bit)
 {
-	icr |= bit;
-	VIPER_ICR = icr;
+	pc104_icr |= bit;
+	VIPER_ICR = pc104_icr;
 }
 
-static void viper_icr_clear_bit(unsigned int bit)
+static void viper_icr_clear_bit(unsigned short bit)
 {
-	icr &= ~bit;
-	VIPER_ICR = icr;
+	pc104_icr &= ~bit;
+	VIPER_ICR = pc104_icr;
 }
 
 /* This function is used from the pcmcia module to reset the CF */
@@ -221,9 +234,9 @@ static void viper_set_core_cpu_voltage(unsigned long khz, int force)
 }
 
 /* Interrupt handling */
-static unsigned int viper_irq_enabled_mask;
+static unsigned short viper_irq_enabled_mask;
 static const int viper_isa_irqs[] = { 3, 4, 5, 6, 7, 10, 11, 12, 9, 14, 15 };
-static const int viper_isa_irq_map[] = {
+static const unsigned short viper_isa_irq_map[] = {
 	0,		/* ISA irq #0, invalid */
 	0,		/* ISA irq #1, invalid */
 	0,		/* ISA irq #2, invalid */
@@ -242,7 +255,7 @@ static const int viper_isa_irq_map[] = {
 	1 << 10,	/* ISA irq #15 */
 };
 
-static inline int viper_irq_to_bitmask(unsigned int irq)
+static inline unsigned short viper_irq_to_bitmask(unsigned int irq)
 {
 	return viper_isa_irq_map[irq - PXA_ISA_IRQ(0)];
 }
@@ -252,14 +265,16 @@ static inline int viper_bit_to_irq(int bit)
 	return viper_isa_irqs[bit] + PXA_ISA_IRQ(0);
 }
 
+/*
+ * Write bit to PC104 interrupt register.
+ */
 static void viper_ack_pc104_irq(struct irq_data *d)
 {
-	int viper_irq = viper_irq_to_bitmask(d->irq);
-
-	if (viper_irq & 0xff)
-		VIPER_LO_IRQ_STATUS = viper_irq;
+	unsigned short bit = viper_irq_to_bitmask(d->irq);
+	if (bit & 0xff)
+		VIPER_LO_IRQ_STATUS = bit;
 	else
-		VIPER_HI_IRQ_STATUS = (viper_irq >> 8);
+		VIPER_HI_IRQ_STATUS = (bit >> 8);
 }
 
 static void viper_mask_pc104_irq(struct irq_data *d)
@@ -272,7 +287,14 @@ static void viper_unmask_pc104_irq(struct irq_data *d)
 	viper_irq_enabled_mask |= viper_irq_to_bitmask(d->irq);
 }
 
-static inline unsigned int viper_pc104_irq_pending(void)
+static struct irq_chip viper_pc104_irq_chip = {
+	.name		= "PC104",
+	.irq_ack	= viper_ack_pc104_irq,
+	.irq_mask	= viper_mask_pc104_irq,
+	.irq_unmask	= viper_unmask_pc104_irq
+};
+
+static inline unsigned short viper_pc104_irq_pending(void)
 {
 	return (VIPER_HI_IRQ_STATUS << 8 | VIPER_LO_IRQ_STATUS) &
 			viper_irq_enabled_mask;
@@ -281,14 +303,20 @@ static inline unsigned int viper_pc104_irq_pending(void)
 static irqreturn_t
 viper_gpio_pc104_irq_handler(int irq, void* devid)
 {
-	unsigned int pending;
+	unsigned short pending;
+
+#ifdef PC104_DEBUG
+        static unsigned int ncall;
+#endif
 
 	pending = viper_pc104_irq_pending();
+#ifdef PC104_DEBUG
+        if (!(ncall++ % 1000))
+            printk(KERN_INFO "pc104_irq_handler, irq=%d, pending=%#x, mask=%#x\n",
+                    irq, pending, viper_irq_enabled_mask);
+#endif
         if (!pending) pending = viper_irq_enabled_mask;
-        /*
-        printk(KERN_INFO "pc104_irq_handler, irq=%d, pending=%#x\n",
-                irq, pending);
-        */
+        if (!pending) return IRQ_NONE;
 
 	do {
 		while (likely(pending)) {
@@ -299,15 +327,12 @@ viper_gpio_pc104_irq_handler(int irq, void* devid)
 		}
 		pending = viper_pc104_irq_pending();
 	} while (pending);
+
+#ifdef VIPER_IRQ_AUTOCLR_RETRIG
+        viper_icr_set_bit(VIPER_ICR_RETRIG);
+#endif
         return IRQ_HANDLED;
 }
-
-static struct irq_chip viper_pc104_irq_chip = {
-	.name		= "PC104",
-	.irq_ack	= viper_ack_pc104_irq,
-	.irq_mask	= viper_mask_pc104_irq,
-	.irq_unmask	= viper_unmask_pc104_irq
-};
 
 static void __init viper_init_irq(void)
 {
@@ -321,23 +346,38 @@ static void __init viper_init_irq(void)
         irq_set_irq_type(PXA_GPIO_TO_IRQ(VIPER_USB_GPIO), IRQ_TYPE_EDGE_FALLING);
 	irq_set_irq_type(PXA_GPIO_TO_IRQ(VIPER_UARTA_GPIO), IRQ_TYPE_EDGE_RISING);
 	irq_set_irq_type(PXA_GPIO_TO_IRQ(VIPER_UARTB_GPIO), IRQ_TYPE_EDGE_RISING);
-	// irq_set_irq_type(PXA_GPIO_TO_IRQ(GPIO8_GPIO), IRQ_TYPE_EDGE_BOTH);
-	// irq_set_irq_type(PXA_GPIO_TO_IRQ(GPIO14_GPIO), IRQ_TYPE_EDGE_BOTH);
-	// irq_set_irq_type(PXA_GPIO_TO_IRQ(GPIO32_GPIO), IRQ_TYPE_EDGE_FALLING);
 
-	/* setup ISA IRQs */
+	/* Setup ISA IRQs */
+#ifdef VIPER_IRQ_AUTOCLR_RETRIG
+        viper_icr_set_bit(VIPER_ICR_AUTO_CLR);
+#endif
 	for (level = 0; level < ARRAY_SIZE(viper_isa_irqs); level++) {
 		isa_irq = viper_bit_to_irq(level);
+                printk(KERN_INFO "Map PC104 IRQ %d to IRQ %d\n",
+                        viper_isa_irqs[level], isa_irq);
+#ifdef VIPER_IRQ_AUTOCLR_RETRIG
 		irq_set_chip_and_handler(isa_irq, &viper_pc104_irq_chip,
 					 handle_simple_irq);
+#else
+                /*
+                 * Use handle_edge_irq here. handle_simple_irq does not call
+                 * chip ack function.
+                 */
+		irq_set_chip_and_handler(isa_irq, &viper_pc104_irq_chip,
+					 handle_edge_irq);
+#endif
 		set_irq_flags(isa_irq, IRQF_VALID | IRQF_PROBE);
 	}
 
-        printk(KERN_INFO "Viper PC104 GPIO=%d, irq=%d, nirqs=%d\n",
+        printk(KERN_INFO "Viper PC104 GPIO=%d, irq=%d, nirqs=%d, pc104_icr=%#x\n",
                 VIPER_CPLD_GPIO,PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO),
-                VIPER_NR_IRQS);
+                VIPER_NR_IRQS, pc104_icr);
 
+#ifdef VIPER_IRQ_AUTOCLR_RETRIG
+	irq_set_irq_type(PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO), IRQ_TYPE_EDGE_RISING);
+#else
 	irq_set_irq_type(PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO), IRQ_TYPE_EDGE_BOTH);
+#endif
 }
 
 /*
@@ -346,9 +386,15 @@ static void __init viper_init_irq(void)
 static int viper_pc104_init(void)
 {
         int err;
+#ifdef VIPER_IRQ_AUTOCLR_RETRIG
+        err = request_irq(PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO),
+                    viper_gpio_pc104_irq_handler, IRQF_TRIGGER_RISING,
+                    "GPIO1-PC104", 0);
+#else
         err = request_irq(PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO),
                     viper_gpio_pc104_irq_handler, IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
                     "GPIO1-PC104", 0);
+#endif
         if (err)
                 printk(KERN_ERR "Error %d in request_irq of IRQ %d for PC104 CPLD on GPIO %d\n",
                         err, PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO), VIPER_CPLD_GPIO);
@@ -617,36 +663,6 @@ static struct platform_device serial_device = {
 	.resource		= viper_serial_resources,
 };
 
-/*
- * USB
- * Define a delay function for the isp116x. See include/linux/usb-isp116x.h 
- * TODO: look into adjusing the bus timing with the pxa registers
- */
-static void isp116x_delay(struct device *dev, int delay)
-{
-
-#if 1
-        /* On this platform, we work with 200MHz clock, giving
-           5 ns per instruction. The cycle below involves 2
-           instructions and we lose 2 more instruction times due
-           to pipeline flush at a jump. I.e., we consume 20 ns
-           per cycle.
-
-           At 400 MHz, there are 10 ns per cycle.
-        */
-        int cyc = delay/10 + 1;
-
-        __asm__ volatile ("0:\n"
-                          "     subs  %0, %1, #1\n"
-                          "     bge   0b\n"
-                          : "=r" (cyc)
-                          : "0"  (cyc)
-                );
-#else
-	ndelay(delay);
-#endif
-}
-
 static struct resource isp116x_resources[] = {
 	[0] = { /* DATA */
 		.start  = VIPER_USB_PHYS + 0,
@@ -680,7 +696,8 @@ static struct isp116x_platform_data isp116x_platform_data = {
 	/* .remote_wakeup_connected = 0, */
 	/* Wakeup by devices on usb bus enabled */
 	.remote_wakeup_enable	= 0,
-	.delay			= isp116x_delay,
+        /* Instead of using a delay function, the timing is adjusted in MSC1.
+         * PLATFORM_DELAY is not defined in drivers/usb/host/isp116x-hcd.c */
 };
 
 static struct platform_device isp116x_device = {
