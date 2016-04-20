@@ -69,6 +69,15 @@
 #include "devices.h"
 
 /*
+ * Information associated with GPIO interrupt handler for PC104.
+ */
+static struct pc104_device
+{
+    unsigned int nirq;
+    unsigned int npending0;
+} pc104_dev;
+
+/*
  * See section titled "PC/104 Interrupts" in the Viper Technical Manual.
  * Interrupts can work in either of two modes:
  * Linux/VxWorks: leave AUTO_CLR and RETRIG bits in the
@@ -235,7 +244,9 @@ static void viper_set_core_cpu_voltage(unsigned long khz, int force)
 
 /* Interrupt handling */
 static unsigned short viper_irq_enabled_mask;
-static const int viper_isa_irqs[] = { 3, 4, 5, 6, 7, 10, 11, 12, 9, 14, 15 };
+
+static const unsigned int viper_isa_irqs[] = { 3, 4, 5, 6, 7, 10, 11, 12, 9, 14, 15 };
+
 static const unsigned short viper_isa_irq_map[] = {
 	0,		/* ISA irq #0, invalid */
 	0,		/* ISA irq #1, invalid */
@@ -260,7 +271,7 @@ static inline unsigned short viper_irq_to_bitmask(unsigned int irq)
 	return viper_isa_irq_map[irq - PXA_ISA_IRQ(0)];
 }
 
-static inline int viper_bit_to_irq(int bit)
+static inline unsigned int viper_bit_to_irq(int bit)
 {
 	return viper_isa_irqs[bit] + PXA_ISA_IRQ(0);
 }
@@ -298,40 +309,6 @@ static inline unsigned short viper_pc104_irq_pending(void)
 {
 	return (VIPER_HI_IRQ_STATUS << 8 | VIPER_LO_IRQ_STATUS) &
 			viper_irq_enabled_mask;
-}
-
-static irqreturn_t
-viper_gpio_pc104_irq_handler(int irq, void* devid)
-{
-	unsigned short pending;
-
-#ifdef PC104_DEBUG
-        static unsigned int ncall;
-#endif
-
-	pending = viper_pc104_irq_pending();
-#ifdef PC104_DEBUG
-        if (!(ncall++ % 1000))
-            printk(KERN_INFO "pc104_irq_handler, irq=%d, pending=%#x, mask=%#x\n",
-                    irq, pending, viper_irq_enabled_mask);
-#endif
-        if (!pending) pending = viper_irq_enabled_mask;
-        if (!pending) return IRQ_NONE;
-
-	do {
-		while (likely(pending)) {
-                        int bit = __ffs(pending);
-                        irq = viper_bit_to_irq(bit);
-			generic_handle_irq(irq);
-                        pending &= ~viper_irq_to_bitmask(irq);
-		}
-		pending = viper_pc104_irq_pending();
-	} while (pending);
-
-#ifdef VIPER_IRQ_AUTOCLR_RETRIG
-        viper_icr_set_bit(VIPER_ICR_RETRIG);
-#endif
-        return IRQ_HANDLED;
 }
 
 static void __init viper_init_irq(void)
@@ -380,6 +357,61 @@ static void __init viper_init_irq(void)
 #endif
 }
 
+#define TRY_THREADED_HANDLER
+
+static irqreturn_t
+viper_gpio_pc104_thread_handler(int irq, void* devid)
+{
+	unsigned short pending;
+        unsigned long flags;
+
+#ifdef PC104_DEBUG
+        struct pc104_device *dev = (struct pc104_device*) devid;
+#endif
+
+	pending = viper_pc104_irq_pending();
+#ifdef PC104_DEBUG
+        if (!(dev->nirq++ % 1000))
+            printk(KERN_INFO "pc104_irq_handler, irq=%d, pending=%#x, mask=%#x\n",
+                    irq, pending, viper_irq_enabled_mask);
+#endif
+        if (!pending) pending = viper_irq_enabled_mask;
+
+#ifdef TRY_THREADED_HANDLER
+        local_irq_save(flags);
+#endif
+
+	do {
+		while (likely(pending)) {
+                        int bit = __ffs(pending);
+                        unsigned int uirq = viper_bit_to_irq(bit);
+			generic_handle_irq(uirq);
+                        pending &= ~viper_irq_to_bitmask(uirq);
+		}
+		pending = viper_pc104_irq_pending();
+	} while (pending);
+
+#ifdef TRY_THREADED_HANDLER
+        local_irq_restore(flags);
+#endif
+
+#ifdef VIPER_IRQ_AUTOCLR_RETRIG
+        viper_icr_set_bit(VIPER_ICR_RETRIG);
+#endif
+        return IRQ_HANDLED;
+}
+
+static irqreturn_t
+viper_gpio_pc104_handler(int irq, void* devid)
+{
+#ifdef TRY_THREADED_HANDLER
+        if (!viper_irq_enabled_mask) return IRQ_NONE;
+        return IRQ_WAKE_THREAD;
+#else
+	return viper_gpio_pc104_thread_handler(irq, devid);
+#endif
+}
+
 /*
  * Request interrupt (113) for the the VIPER_CPLD_GPIO (1).
  */
@@ -387,13 +419,32 @@ static int viper_pc104_init(void)
 {
         int err;
 #ifdef VIPER_IRQ_AUTOCLR_RETRIG
-        err = request_irq(PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO),
-                    viper_gpio_pc104_irq_handler, IRQF_TRIGGER_RISING,
-                    "GPIO1-PC104", 0);
+
+#ifdef TRY_THREADED_HANDLER
+        err = request_threaded_irq(PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO),
+                    viper_gpio_pc104_handler,
+                    viper_gpio_pc104_thread_handler,
+                    IRQF_TRIGGER_RISING,
+                    "GPIO1-PC104", &pc104_dev);
 #else
-        err = request_irq(PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO),
-                    viper_gpio_pc104_irq_handler, IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
-                    "GPIO1-PC104", 0);
+	err = request_irq(PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO),
+                viper_gpio_pc104_handler,
+                IRQF_TRIGGER_RISING,
+                "GPIO1-PC104", &pc104_dev);
+#endif
+#else
+#ifdef TRY_THREADED_HANDLER
+        err = request_threaded_irq(PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO),
+                    viper_gpio_pc104_handler,
+                    viper_gpio_pc104_thread_handler,
+                    IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
+                    "GPIO1-PC104", &pc104_dev);
+#else
+	err = request_irq(PXA_GPIO_TO_IRQ(VIPER_CPLD_GPIO),
+                viper_gpio_pc104_handler,
+                IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
+                "GPIO1-PC104", &pc104_dev);
+#endif
 #endif
         if (err)
                 printk(KERN_ERR "Error %d in request_irq of IRQ %d for PC104 CPLD on GPIO %d\n",
@@ -776,7 +827,10 @@ static struct platform_device viper_mtd_devices[] = {
 
 static struct platform_device *viper_devs[] __initdata = {
 	&smc91x_device,
-	// &i2c_bus_device,
+        /* Viper won't boot if i2c_bus_device is enabled here.
+         * Needs work.
+	&i2c_bus_device,
+        */
 	&serial_device,
 	&isp116x_device,
 	&viper_mtd_devices[0],
