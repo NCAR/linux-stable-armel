@@ -492,12 +492,12 @@ static struct smsc911x_platform_config smsc911x_config = {
 static struct resource smsc911x_resources[] = {
 	{
 		.start          = TITAN_ETH0_PHYS,
-		.end            = TITAN_ETH0_PHYS + 0xff,
+		.end            = TITAN_ETH0_PHYS + 0x10f,
 		.flags          = IORESOURCE_MEM,
 	}, {
 		.start          = PXA_GPIO_TO_IRQ(TITAN_ETH0_GPIO),
 		.end            = PXA_GPIO_TO_IRQ(TITAN_ETH0_GPIO),
-		.flags          = IORESOURCE_IRQ,
+		.flags          = IORESOURCE_IRQ | IORESOURCE_IRQ_LOWEDGE,
 	},
 };
 
