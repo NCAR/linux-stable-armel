@@ -139,9 +139,12 @@ static inline unsigned int titan_bit_to_irq(int bit)
  * In 2.6.35 kernel code for the Titan, the IRQ ack function wrote a one
  * to the appropriate IRQ bit in TITAN_LO_IRQ_STATUS or TITAN_HI_IRQ_STATUS,
  * which according to the above, seems unnecessary. Testing indicates that
- * it has no effect.
+ * it has no effect. Note that this ack is only called by
+ * if handle_edge_irq or handle_level_irq, not by handle_simple_irq.
  */
-static void titan_ack_pc104_irq(struct irq_data *d) {}
+static void titan_ack_pc104_irq(struct irq_data *d)
+{
+}
 
 static void titan_mask_pc104_irq(struct irq_data *d)
 {
@@ -188,12 +191,15 @@ static void __init titan_init_irq(void)
 	/* Setup ISA IRQs */
 	for (level = 0; level < ARRAY_SIZE(titan_isa_irqs); level++) {
                 unsigned int isa_irq = titan_bit_to_irq(level);
-		printk(KERN_INFO "Map PC104 IRQ %d to IRQ %d\n",
-                        titan_isa_irqs[level], isa_irq);
+// #define GO_TIL_DONE
 #ifdef GO_TIL_DONE
+		printk(KERN_INFO "Map PC104 IRQ %d to IRQ %d (with til done)\n",
+                        titan_isa_irqs[level], isa_irq);
 		irq_set_chip_and_handler(isa_irq, &titan_pc104_irq_chip,
                         handle_simple_irq_til_done);
 #else
+		printk(KERN_INFO "Map PC104 IRQ %d to IRQ %d\n",
+                        titan_isa_irqs[level], isa_irq);
 		irq_set_chip_and_handler(isa_irq, &titan_pc104_irq_chip,
                         handle_simple_irq);
 #endif
@@ -207,19 +213,7 @@ static void __init titan_init_irq(void)
                 IRQ_TYPE_EDGE_RISING);
 }
 
-/*
- * Hander for the TITAN_ISA_IRQ GPIO interrupt.
- * Just checks whether there are enabled pc104 interrupts.
- */
-static irqreturn_t
-titan_gpio_pc104_handler(int irq, void* dev_id)
-{
-        struct pc104_device* dev = (struct pc104_device*) dev_id;
-
-        if (!titan_irq_enabled_mask) return IRQ_NONE;
-        atomic_set(&dev->quiet, 0);
-        return IRQ_WAKE_THREAD;
-}
+#define TRY_THREADED_HANDLER
 
 /*
  * Thread hander for the TITAN_ISA_IRQ GPIO interrupt.
@@ -227,19 +221,26 @@ titan_gpio_pc104_handler(int irq, void* dev_id)
  * PC104/ISA needs servicing and calls those handlers, until
  * the pending bits are clear..
  */
-static irqreturn_t
-titan_gpio_pc104_thread_handler(int irq, void* dev_id)
+static
+#ifndef TRY_THREADED_HANDLER
+inline
+#endif
+irqreturn_t
+titan_gpio_pc104_thread_handler(int irq, void* devid)
 {
         unsigned short pending;
-        unsigned long flags;
 
-        struct pc104_device* dev = (struct pc104_device*) dev_id;
+#ifdef TRY_THREADED_HANDLER
+        unsigned long flags;
+        struct pc104_device* dev = (struct pc104_device*) devid;
+#endif
 
         pending = titan_pc104_irq_pending();
         if (!pending) pending = titan_irq_enabled_mask;
 
-        spin_lock_irqsave(&dev->lock, flags);
-        // local_irq_save(flags);
+#ifdef TRY_THREADED_HANDLER
+        local_irq_save(flags);
+#endif
 
         do {
                 while (likely(pending)) {
@@ -251,14 +252,36 @@ titan_gpio_pc104_thread_handler(int irq, void* dev_id)
                 pending = titan_pc104_irq_pending();
         } while (pending);
 
-        spin_unlock_irqrestore(&dev->lock, flags);
-        // local_irq_restore(flags);
+#ifdef TRY_THREADED_HANDLER
+        local_irq_restore(flags);
+#endif
         return IRQ_HANDLED;
+}
+
+/*
+ * Hander for the TITAN_ISA_IRQ GPIO interrupt.
+ */
+static irqreturn_t
+titan_gpio_pc104_handler(int irq, void* devid)
+{
+#ifdef TRY_THREADED_HANDLER
+        struct pc104_device* dev = (struct pc104_device*) devid;
+        if (!titan_irq_enabled_mask) return IRQ_NONE;
+        atomic_set(&dev->quiet, 0);
+        return IRQ_WAKE_THREAD;
+#else
+        return titan_gpio_pc104_thread_handler(irq, devid);
+#endif
 }
 
 static void pc104_irq_watchdog(unsigned long data)
 {
         struct pc104_device* dev = (struct pc104_device*) data;
+
+#ifndef TRY_THREADED_HANDLER
+        unsigned long flags;
+        spin_lock_irqsave(&dev->lock, flags);
+#endif
 
         if (atomic_read(&dev->quiet) && titan_irq_enabled_mask) {
                 dev->nbark++;
@@ -271,6 +294,10 @@ static void pc104_irq_watchdog(unsigned long data)
         }
         atomic_set(&dev->quiet, 1);
         mod_timer(&dev->watchdog, jiffies + PC104_WATCHDOG_JIFFIES); 
+
+#ifndef TRY_THREADED_HANDLER
+        spin_unlock_irqrestore(&dev->lock, flags);
+#endif
 }
 
 /*
@@ -285,17 +312,23 @@ static int titan_pc104_init(void)
         spin_lock_init(&pc104_dev.lock);
         atomic_set(&pc104_dev.quiet, 1);
 
+#ifdef TRY_THREADED_HANDLER
         err = request_threaded_irq(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
                     titan_gpio_pc104_handler,
                     titan_gpio_pc104_thread_handler,
                     IRQF_TRIGGER_RISING,
                     "GPIO_17-PC104", &pc104_dev);
+#else
+        err = request_irq(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
+                    titan_gpio_pc104_handler,
+                    IRQF_TRIGGER_RISING,
+                    "GPIO_17-PC104", &pc104_dev);
+#endif
 	if (err) {
 		printk(KERN_ERR "Error %d in request_irq of IRQ %d for PC104 CPLD on GPIO %d\n",
                         err, PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ), TITAN_ISA_IRQ);
                 return err;
         }
-
 
         /* start the watchdog timer */
         init_timer(&pc104_dev.watchdog);
