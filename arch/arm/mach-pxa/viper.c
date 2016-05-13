@@ -68,13 +68,19 @@
 #include "generic.h"
 #include "devices.h"
 
+/* Will be non-zero for Version 2 cards */
+u8 viper_version;   
+
 /*
  * Information associated with GPIO interrupt handler for PC104.
  */
 static struct pc104_device
 {
-    unsigned int nirq;
-    unsigned int npending0;
+        unsigned int nirq;
+        unsigned int npend0;
+        unsigned long lastpend;
+        unsigned int ndiff;
+        unsigned long lastdiff;
 } pc104_dev;
 
 /*
@@ -307,8 +313,26 @@ static struct irq_chip viper_pc104_irq_chip = {
 
 static inline unsigned short viper_pc104_irq_pending(void)
 {
-	return (VIPER_HI_IRQ_STATUS << 8 | VIPER_LO_IRQ_STATUS) &
-			viper_irq_enabled_mask;
+        unsigned short int val, val2;
+        
+        val = (VIPER_LO_IRQ_STATUS & 0xff);
+        if (viper_version) val |= (VIPER_HI_IRQ_STATUS & 0x7) << 8;
+
+        val2 = val & viper_irq_enabled_mask;
+
+        // Check for spurious interrupts or unexpected CPLD behaviour.
+        if (val != val2) {
+		unsigned long j = jiffies;
+		pc104_dev.ndiff++;
+		if (j - pc104_dev.lastdiff > 10 * HZ) {
+			printk(KERN_WARNING "Unexpected PC104 IRQ CPLD value=%#hx, mask=%#hx, #bad=%u, %ld/sec\n",
+				val, viper_irq_enabled_mask, pc104_dev.ndiff,
+				pc104_dev.ndiff / (((long)j - (long)pc104_dev.lastdiff) / HZ));
+			pc104_dev.ndiff = 0;
+			pc104_dev.lastdiff = j;
+		}
+        }
+	return val2;
 }
 
 static void __init viper_init_irq(void)
@@ -325,6 +349,11 @@ static void __init viper_init_irq(void)
 	irq_set_irq_type(PXA_GPIO_TO_IRQ(VIPER_UARTB_GPIO), IRQ_TYPE_EDGE_RISING);
 
 	/* Setup ISA IRQs */
+
+        /* probably not necessary, but we'll do it anyway... */
+        VIPER_LO_IRQ_STATUS = 0;
+        if (viper_version) VIPER_HI_IRQ_STATUS = 0;
+
 #ifdef VIPER_IRQ_AUTOCLR_RETRIG
         viper_icr_set_bit(VIPER_ICR_AUTO_CLR);
 #endif
@@ -360,22 +389,31 @@ static void __init viper_init_irq(void)
 #define TRY_THREADED_HANDLER
 
 static irqreturn_t
+#ifndef TRY_THREADED_HANDLER
+inline
+#endif
 viper_gpio_pc104_thread_handler(int irq, void* devid)
 {
 	unsigned short pending;
+#ifdef TRY_THREADED_HANDLER
         unsigned long flags;
-
-#ifdef PC104_DEBUG
-        struct pc104_device *dev = (struct pc104_device*) devid;
 #endif
+
+        struct pc104_device *dev = (struct pc104_device*) devid;
 
 	pending = viper_pc104_irq_pending();
-#ifdef PC104_DEBUG
-        if (!(dev->nirq++ % 1000))
-            printk(KERN_INFO "pc104_irq_handler, irq=%d, pending=%#x, mask=%#x\n",
-                    irq, pending, viper_irq_enabled_mask);
-#endif
-        if (!pending) pending = viper_irq_enabled_mask;
+        if (!pending) {
+		unsigned long j = jiffies;
+		dev->npend0++;
+		if (j - dev->lastpend > 10 * HZ) {
+			printk(KERN_WARNING "PC104 IRQ CPLD is zero, mask=%#hx, #bad=%u, %ld/sec\n",
+				viper_irq_enabled_mask, dev->npend0,
+				dev->npend0 / (((long)j - (long)dev->lastpend) / HZ));
+			dev->npend0 = 0;
+			dev->lastpend = j;
+		}
+	}
+
 
 #ifdef TRY_THREADED_HANDLER
         local_irq_save(flags);
@@ -1062,7 +1100,6 @@ static void viper_power_off(void)
 static void __init viper_init(void)
 {
         uint32_t u32val, u32val2;
-	u8 version;
 
 	pm_power_off = viper_power_off;
 
@@ -1080,8 +1117,8 @@ static void __init viper_init(void)
 #endif
 
 	/* v1 hardware cannot use the datacs line */
-	version = viper_hw_version();
-	if (version == 0)
+	viper_version = viper_hw_version();
+	if (viper_version == 0)
 		smc91x_device.num_resources--;
 
 	pxa_set_i2c_info(NULL);
@@ -1092,15 +1129,15 @@ static void __init viper_init(void)
 
 	register_syscore_ops(&viper_cpu_syscore_ops);
 
-	if (version) {
+	if (viper_version) {
 		pr_info("viper: hardware v%di%d detected. "
 			"CPLD revision %d.\n",
-			VIPER_BOARD_VERSION(version),
-			VIPER_BOARD_ISSUE(version),
-			VIPER_CPLD_REVISION(version));
-		system_rev = (VIPER_BOARD_VERSION(version) << 8) |
-			     (VIPER_BOARD_ISSUE(version) << 4) |
-			     VIPER_CPLD_REVISION(version);
+			VIPER_BOARD_VERSION(viper_version),
+			VIPER_BOARD_ISSUE(viper_version),
+			VIPER_CPLD_REVISION(viper_version));
+		system_rev = (VIPER_BOARD_VERSION(viper_version) << 8) |
+			     (VIPER_BOARD_ISSUE(viper_version) << 4) |
+			     VIPER_CPLD_REVISION(viper_version);
 	} else {
 		pr_info("viper: No version register.\n");
 	}
