@@ -74,6 +74,12 @@
 #include "generic.h"
 
 /*
+ * board version as read from TITAN_BOARD_VERSION register.
+ * Used to correct for a IRQ mapping bug on V2 Titans.
+ */
+static int board_version;
+
+/*
  * Time period to check for paused pc104 interrupt.
  */
 #define PC104_WATCHDOG_JIFFIES (1 * HZ)
@@ -89,9 +95,11 @@ static struct pc104_device
         unsigned long lastbark;
         unsigned int nbark;
         unsigned int npend0;
+        unsigned int nok0;
         unsigned long lastpend;
         unsigned int ndiff;
         unsigned long lastdiff;
+        unsigned int nok;
 } pc104_dev;
 
 /*
@@ -99,24 +107,18 @@ static struct pc104_device
  */
 
 /*
- * Bits 0-7 of TITAN_LO_IRQ_STATUS are supposed to be
- * ISA IRQS 3-7 and 10-12, except that there is a bug in
- * the CPLD, such that the TITAN_LO_IRQ_STATUS is shifted
- * left by one bit.  So bits 1-7 are IRQS 3-7 and 10,11.
- * I don't know whether things wrapped around so that bit
- * 0 is IRQ 12.
+ * Bits 0-7 of TITAN_LO_IRQ_STATUS are ISA IRQS 3-7 and 10-12.
+ * Except on Titan V2, where bits 6 and 7 are IRQS 10, 11.
+ * IRQ 12 is not detectable. This issue is dealt with
+ * when TITAN_LO_IRQ_STATUS is read (or written).
+ * A handler IRQ 12 is not set up on V2 boards.
  *
  * Bits 0-2 of TITAN_HI_IRQ_STATUS are IRQS 9,14,15.
- *
  */
 
 static unsigned short titan_irq_enabled_mask;
 
-/*
- * Until it is determined that the status of IRQ 12 is
- * available from the CPLD, it's position is flagged here as 0.
- */
-static const unsigned int titan_isa_irqs[] = { 3, 4, 5, 6, 7, 10, 11, 0, 9, 14, 15 };
+static const unsigned int titan_isa_irqs[] = { 3, 4, 5, 6, 7, 10, 11, 12, 9, 14, 15 };
 
 static const unsigned short titan_isa_irq_map[] = {
 	0,		/* ISA irq #0, invalid */
@@ -130,8 +132,8 @@ static const unsigned short titan_isa_irq_map[] = {
 	0,		/* ISA irq #8, invalid */
 	1 << 8,		/* ISA irq #9 */
 	1 << 5,		/* ISA irq #10 */
-	1 << 6,		/* ISA irq #11 */
-	0,		/* ISA irq #12  CPLD bug, should be 1<<7 */
+	1 << 6,		/* ISA irq #11 */ 
+	1 << 7,		/* ISA irq #12 */
 	0,		/* ISA irq #13, invalid */
 	1 << 9,		/* ISA irq #14 */
 	1 << 10,	/* ISA irq #15 */
@@ -156,23 +158,26 @@ static inline unsigned int titan_bit_to_irq(int bit)
  * In 2.6.35 kernel code for the Titan, the IRQ ack function wrote a one
  * to the appropriate IRQ bit in TITAN_LO_IRQ_STATUS or TITAN_HI_IRQ_STATUS,
  * which according to the above, seems unnecessary. Testing indicates that
- * it has no effect. Note that this ack is only called by
- * if handle_edge_irq or handle_level_irq, not by handle_simple_irq.
+ * it has no effect. Note that the chip ack function is only called
+ * from handle_edge_irq or handle_level_irq, not by handle_simple_irq.
  */
 static void titan_ack_pc104_irq(struct irq_data *d)
 {
 }
 
 /*
- * A ack function if is is determined to be needed.
+ * An ack function, if is is determined to be needed.
  */
 static void titan_ack_pc104_irqx(unsigned int irq)
 {
-        unsigned short val = titan_irq_to_bitmask(irq);
-        if (val & 0xff)
-            TITAN_LO_IRQ_STATUS = (val << 1) & 0xff;    // account for bug
+        unsigned short ibits = titan_irq_to_bitmask(irq);
+        if (ibits & 0xff) {
+                if (board_version == 2)
+                        ibits = ((ibits & 0x60) << 1) | (ibits & 0x1f);
+                TITAN_LO_IRQ_STATUS = (ibits) & 0xff;
+        }
         else
-            TITAN_HI_IRQ_STATUS = (val >> 8) & 0x07;
+                TITAN_HI_IRQ_STATUS = (ibits >> 8) & 0x07;
 }
 
 static void titan_mask_pc104_irq(struct irq_data *d)
@@ -187,26 +192,40 @@ static void titan_unmask_pc104_irq(struct irq_data *d)
 
 static inline unsigned short titan_pc104_irq_pending(void)
 {
-        // bits in LO_IRQ_STATUS are off by one, so shift right
-        unsigned short val = ((TITAN_HI_IRQ_STATUS & 0x7) << 8 |
-                ((TITAN_LO_IRQ_STATUS >> 1) & 0x7f));
-        unsigned short val2 = val & titan_irq_enabled_mask;
+        unsigned short ibits, mbits;
+
+        ibits = ((TITAN_LO_IRQ_STATUS) & 0xff) | (TITAN_HI_IRQ_STATUS & 0x7) << 8;
+
+        /*
+         * In V2, shift bits 6 and 7 right, to correct IRQS 10 and 11.
+         * 12 is not detectable.
+         */
+        if (board_version == 2)
+                ibits = ((ibits & 0xc0) >> 1) | (ibits & 0x71f);
+
+        /* masked bits */
+        mbits = ibits & titan_irq_enabled_mask;
+
         /*
          * Warn about unexpected values from the CPLD. This helped detect
          * the CPLD bug, and could warn of spurious interrupts.
          */
-        if (val != val2) {
+        if (ibits != mbits) {
                 unsigned long j = jiffies;
                 pc104_dev.ndiff++;
                 if (j - pc104_dev.lastdiff > 10 * HZ) {
-			printk(KERN_WARNING "Unexpected PC104 IRQ CPLD value=%#hx, mask=%#hx, #bad=%u, %ld/sec\n",
-				val, titan_irq_enabled_mask, pc104_dev.ndiff,
-				pc104_dev.ndiff / (((long)j - (long)pc104_dev.lastdiff) / HZ));
+			printk(KERN_WARNING "Unexpected PC104 IRQ status=%#hx, mask=%#hx, #bad=%u, %ld/sec, #ok=%u\n",
+				ibits, titan_irq_enabled_mask, pc104_dev.ndiff,
+				pc104_dev.ndiff / (((long)j - (long)pc104_dev.lastdiff) / HZ),
+                                pc104_dev.nok);
                         pc104_dev.ndiff = 0;
+                        pc104_dev.nok = 0;
                         pc104_dev.lastdiff = j;
                 }
         }
-        return val2;
+        /* OK means that no bits were set that were not for enabled IRQS */
+        else if (ibits) pc104_dev.nok++;
+        return mbits;
 }
 
 static struct irq_chip titan_pc104_irq_chip = {
@@ -219,6 +238,8 @@ static struct irq_chip titan_pc104_irq_chip = {
 static void __init titan_init_irq(void)
 {
 	int level;
+
+        board_version = (TITAN_BOARD_VERSION & 0xff) >> 4;
 
 	pxa27x_init_irq();
 
@@ -242,13 +263,18 @@ static void __init titan_init_irq(void)
 	/* Setup ISA IRQs */
 	for (level = 0; level < ARRAY_SIZE(titan_isa_irqs); level++) {
                 unsigned int isa_irq = titan_bit_to_irq(level);
-                // this check skips around IRQ 12
-                if (isa_irq > PXA_ISA_IRQ(0)) {
-                    printk(KERN_INFO "Map PC104 IRQ %d to IRQ %d\n",
-                            titan_isa_irqs[level], isa_irq);
-                    irq_set_chip_and_handler(isa_irq, &titan_pc104_irq_chip,
-                            handle_simple_irq);
-                    set_irq_flags(isa_irq, IRQF_VALID | IRQF_PROBE);
+
+                // No handler for IRQ 12 on V2
+                if (board_version == 2 && titan_isa_irqs[level] == 12) {
+                        printk(KERN_INFO "    PC104 IRQ %d not supported in board V2\n",
+                                titan_isa_irqs[level]);
+                }
+                else {
+                        printk(KERN_INFO "Map PC104 IRQ %d to IRQ %d\n",
+                                titan_isa_irqs[level], isa_irq);
+                        irq_set_chip_and_handler(isa_irq, &titan_pc104_irq_chip,
+                                handle_simple_irq);
+                        set_irq_flags(isa_irq, IRQF_VALID | IRQF_PROBE);
                 }
 	}
 
@@ -306,13 +332,17 @@ titan_gpio_pc104_thread_handler(int irq, void* devid)
                 unsigned long j = jiffies;
                 dev->npend0++;
                 if (j - dev->lastpend > 10 * HZ) {
-			printk(KERN_WARNING "PC104 IRQ CPLD is zero, mask=%#hx, #bad=%u, %ld/sec\n",
+			printk(KERN_WARNING "PC104 IRQ CPLD is zero, mask=%#hx, #bad=%u, %ld/sec, #ok=%u\n",
                                 titan_irq_enabled_mask, dev->npend0,
-                                dev->npend0 / (((long)j - (long)dev->lastpend) / HZ));
+                                dev->npend0 / (((long)j - (long)dev->lastpend) / HZ),
+                                dev->nok0);
                         dev->npend0 = 0;
+                        dev->nok0 = 0;
                         dev->lastpend = j;
                 }
-        }
+                // pending = titan_irq_enabled_mask; 
+        } 
+        else dev->nok0++;
 
 #ifdef TRY_THREADED_HANDLER
         local_irq_save(flags);
@@ -692,19 +722,19 @@ static struct pxamci_platform_data titan_v2_mci_platform_data = {
 static int titan_ohci_init(struct device *dev)
 {
 	int err;
-	if ((err = gpio_request(TITAN_USB2_PWR_EN_GPIO, "USB2_PWREN"))) {
+	if ((err = gpio_request(TITAN_USB2_PEN_GPIO, "USB2_PWREN"))) {
 		dev_err(dev, "Can't request USB2_PWREN\n");
 		return err;
 	}
 
-	if ((err = gpio_direction_output(TITAN_USB2_PWR_EN_GPIO, 1))) {
-		gpio_free(TITAN_USB2_PWR_EN_GPIO);
+	if ((err = gpio_direction_output(TITAN_USB2_PEN_GPIO, 1))) {
+		gpio_free(TITAN_USB2_PEN_GPIO);
 		dev_err(dev, "Can't enable USB2_PWREN\n");
 		return err;
 	}
 
 	/* Switch on port 2. */
-	gpio_set_value(TITAN_USB2_PWR_EN_GPIO, 1);
+	gpio_set_value(TITAN_USB2_PEN_GPIO, 1);
 
 	/* Port 2 is shared between the host and client interface. */
 	UP2OCR = UP2OCR_HXOE | UP2OCR_HXS | UP2OCR_DMPDE | UP2OCR_DPPDE;
@@ -715,9 +745,9 @@ static int titan_ohci_init(struct device *dev)
 static void titan_ohci_exit(struct device *dev)
 {
 	/* Power-off port 2 */
-	gpio_set_value(TITAN_USB2_PWR_EN_GPIO, 0);
-	gpio_direction_output(TITAN_USB2_PWR_EN_GPIO, 0);
-	gpio_free(TITAN_USB2_PWR_EN_GPIO);
+	gpio_set_value(TITAN_USB2_PEN_GPIO, 0);
+	gpio_direction_output(TITAN_USB2_PEN_GPIO, 0);
+	gpio_free(TITAN_USB2_PEN_GPIO);
 }
 
 static struct pxaohci_platform_data titan_ohci_platform_data = {
@@ -851,10 +881,6 @@ static mfp_cfg_t common_pin_config[] __initdata = {
 	GPIO80_nCS_4,
 	GPIO33_nCS_5,
 
-        /* also see titan_ohci_init() */
-        MFP_CFG_OUT(GPIO22, AF0, DRIVE_HIGH),   /* USB channel 2 power enable */
-        MFP_CFG_IN(GPIO114, AF0),               /* USB channel 2 over-current detect */
-
 	/* setup GPIO for PXA27x MMC controller */
         GPIO32_MMC_CLK,
 	GPIO92_MMC_DAT_0,
@@ -865,8 +891,9 @@ static mfp_cfg_t common_pin_config[] __initdata = {
 
 	GPIO88_USBH1_PWR,
 	GPIO89_USBH1_PEN,
-	GPIO119_USBH2_PWR,
-	GPIO120_USBH2_PEN,
+        /* also see titan_ohci_init() */
+        MFP_CFG_IN(GPIO114, AF0),
+        MFP_CFG_OUT(GPIO22, AF0, DRIVE_LOW),
 
 	GPIO86_LCD_LDD_16,
 	GPIO87_LCD_LDD_17,
@@ -919,6 +946,7 @@ static void __init titan_init(void)
 {
         uint32_t u32val, u32val2;
         extern struct resource ioport_resource;
+
 
 	system_rev = ((TITAN_BOARD_VERSION & 0xFF) << 8) | \
 	             (TITAN_CPLD_VERSION & 0xFF);

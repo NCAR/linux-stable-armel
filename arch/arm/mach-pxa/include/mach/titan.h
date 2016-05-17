@@ -33,12 +33,13 @@
 #define TITAN_ETH0_GPIO		(14)
 #define TITAN_ISA_IRQ		(17)	/* PC104 */
 #define TITAN_BKLEN_GPIO	(19)
-#define TITAN_USB2_PWR_EN_GPIO	(22)
+#define TITAN_USB2_PEN_GPIO	(22)
 #define TITAN_MMC_WP_GPIO       (52)
 #define TITAN_MMC_CD_GPIO       (53)
 #define TITAN_AC97_RST_GPIO	(95)
 #define TITAN_MMC_SD_PEN_N	(99)	/* TITAN-V2 only */
 #define TITAN_LCD_EN_GPIO	(101)
+#define TITAN_USB2_PWR_GPIO	(114)
 #define TITAN_GPIO_IRQ		(116)
 #define PXA_ISA_IRQ_EXTN(x)     (PXA_ISA_IRQ(x) + 3)
 #define TITAN_USER_GPIO_BASE    (128)
