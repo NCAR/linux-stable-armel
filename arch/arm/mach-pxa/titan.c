@@ -343,7 +343,22 @@ titan_gpio_pc104_thread_handler(int irq, void* devid)
                         dev->nok0 = 0;
                         dev->lastpend = j;
                 }
-                // pending = titan_irq_enabled_mask; 
+                /*
+                 * Under heavy PC104 interrupt load, say > 500/sec,
+                 * this pending value may be be 0 from time to
+                 * time.  Setting it to titan_irq_enabled_mask, so that
+                 * all ISRs for enabled PC104 interrupts are called,
+                 * reduces the chance of interrupts being dropped.
+                 * The gotcha is that an ISR can be called
+                 * when its device does not need attention. If the
+                 * device and driver support working in a shared-interrupt
+                 * type manner, where they can detect if the device needs
+                 * service, and return IRQ_NONE otherwise, then this
+                 * shouldn't be a problem. If not, then setting 
+                 * pending here to the enabled interrupts may have to
+                 * be re-thought, or selectable via a kernel parameter.
+                 */
+                pending = titan_irq_enabled_mask; 
         } 
         else dev->nok0++;
 
