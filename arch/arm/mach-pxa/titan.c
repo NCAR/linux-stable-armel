@@ -74,12 +74,6 @@
 #include "generic.h"
 
 /*
- * board version as read from TITAN_BOARD_VERSION register.
- * Used to correct for a IRQ mapping bug on V2 Titans.
- */
-static int board_version;
-
-/*
  * Time period to check for paused pc104 interrupt.
  */
 #define PC104_WATCHDOG_JIFFIES (1 * HZ)
@@ -105,48 +99,71 @@ static struct pc104_device
 /*
  * Interrupt handling
  */
-
-/*
- * Bits 0-7 of TITAN_LO_IRQ_STATUS are ISA IRQS 3-7 and 10-12.
- * Except on Titan V2, where bits 6 and 7 are IRQS 10, 11.
- * IRQ 12 is not detectable. This issue is dealt with
- * when TITAN_LO_IRQ_STATUS is read (or written).
- * A handler IRQ 12 is not set up on V2 boards.
- *
- * Bits 0-2 of TITAN_HI_IRQ_STATUS are IRQS 9,14,15.
- */
-
 static unsigned short titan_irq_enabled_mask;
 
-static const unsigned int titan_isa_irqs[] = { 3, 4, 5, 6, 7, 10, 11, 12, 9, 14, 15 };
+/*
+ * Index into the IRQ map arrays. 0 for V1 boards, 1 for V2.
+ */
+static int irq_map_index;
 
-static const unsigned short titan_isa_irq_map[] = {
-	0,		/* ISA irq #0, invalid */
-	0,		/* ISA irq #1, invalid */
-	0,		/* ISA irq #2, invalid */
-	1 << 0,		/* ISA irq #3 */
-	1 << 1,		/* ISA irq #4 */
-	1 << 2,		/* ISA irq #5 */
-	1 << 3,		/* ISA irq #6 */
-	1 << 4,		/* ISA irq #7 */
-	0,		/* ISA irq #8, invalid */
-	1 << 8,		/* ISA irq #9 */
-	1 << 5,		/* ISA irq #10 */
-	1 << 6,		/* ISA irq #11 */ 
-	1 << 7,		/* ISA irq #12 */
-	0,		/* ISA irq #13, invalid */
-	1 << 9,		/* ISA irq #14 */
-	1 << 10,	/* ISA irq #15 */
+/*
+ * Mapping from bit number to IRQ.
+ */
+static const unsigned int titan_isa_irqs[2][11] = {
+        { 3, 4, 5, 6, 7, 10, 11, 12,  9, 14, 15 },  /* V1 */
+        { 3, 4, 5, 6, 7,  9, 10, 11, 12, 14, 15 }   /* V2 */
+};
+
+/*
+ * IRQ to bit mask
+ */
+static const unsigned short titan_isa_irq_map[2][16] = {
+        {
+                0,		/* ISA irq #0, invalid */
+                0,		/* ISA irq #1, invalid */
+                0,		/* ISA irq #2, invalid */
+                1 << 0,		/* ISA irq #3 */
+                1 << 1,		/* ISA irq #4 */
+                1 << 2,		/* ISA irq #5 */
+                1 << 3,		/* ISA irq #6 */
+                1 << 4,		/* ISA irq #7 */
+                0,		/* ISA irq #8, invalid */
+                1 << 8,		/* ISA irq #9 */
+                1 << 5,		/* ISA irq #10 */
+                1 << 6,		/* ISA irq #11 */ 
+                1 << 7,		/* ISA irq #12 */
+                0,		/* ISA irq #13, invalid */
+                1 << 9,		/* ISA irq #14 */
+                1 << 10,	/* ISA irq #15 */
+        },  /* V1 */
+        {
+                0,
+                0,
+                0,
+                0x001,          /* ISA irq #3 */
+                0x002,          /* ISA irq #4 */
+                0x004,          /* ISA irq #5 */
+                0x008,          /* ISA irq #6 */
+                0x010,          /* ISA irq #7 */
+                0,
+                0x020,          /* ISA irq #9 */
+                0x040,          /* ISA irq #10 */
+                0x080,          /* ISA irq #11 */
+                0x100,          /* ISA irq #12 */
+                0,
+                0x200,          /* ISA irq #14 */
+                0x400           /* ISA irq #15 */
+        }   /* V2 */
 };
 
 static inline unsigned short titan_irq_to_bitmask(unsigned int irq)
 {
-	return titan_isa_irq_map[irq - PXA_ISA_IRQ(0)];
+	return titan_isa_irq_map[irq_map_index][irq - PXA_ISA_IRQ(0)];
 }
 
 static inline unsigned int titan_bit_to_irq(int bit)
 {
-	return titan_isa_irqs[bit] + PXA_ISA_IRQ(0);
+	return titan_isa_irqs[irq_map_index][bit] + PXA_ISA_IRQ(0);
 }
 
 /* According to the Titan Technical Manual:
@@ -171,11 +188,8 @@ static void titan_ack_pc104_irq(struct irq_data *d)
 static void titan_ack_pc104_irqx(unsigned int irq)
 {
         unsigned short ibits = titan_irq_to_bitmask(irq);
-        if (ibits & 0xff) {
-                if (board_version == 2)
-                        ibits = ((ibits & 0x60) << 1) | (ibits & 0x1f);
+        if (ibits & 0xff)
                 TITAN_LO_IRQ_STATUS = (ibits) & 0xff;
-        }
         else
                 TITAN_HI_IRQ_STATUS = (ibits >> 8) & 0x07;
 }
@@ -196,19 +210,12 @@ static inline unsigned short titan_pc104_irq_pending(void)
 
         ibits = ((TITAN_LO_IRQ_STATUS) & 0xff) | (TITAN_HI_IRQ_STATUS & 0x7) << 8;
 
-        /*
-         * In V2, shift bits 6 and 7 right, to correct IRQS 10 and 11.
-         * 12 is not detectable.
-         */
-        if (board_version == 2)
-                ibits = ((ibits & 0xc0) >> 1) | (ibits & 0x71f);
-
         /* masked bits */
         mbits = ibits & titan_irq_enabled_mask;
 
         /*
          * Warn about unexpected values from the CPLD. This helped detect
-         * the CPLD bug, and could warn of spurious interrupts.
+         * the V1 vs V2 difference, and could warn of spurious interrupts.
          */
         if (ibits != mbits) {
                 unsigned long j = jiffies;
@@ -239,13 +246,8 @@ static void __init titan_init_irq(void)
 {
 	int level;
 
-        board_version = (TITAN_BOARD_VERSION & 0xff) >> 4;
 
 	pxa27x_init_irq();
-
-        /* probably not necessary, but we'll do it anyway... */
-        TITAN_LO_IRQ_STATUS = 0;
-        TITAN_HI_IRQ_STATUS = 0;
 
         /*
          * Much of the configuration of the GPIOs and their associated IRQs is
@@ -261,21 +263,22 @@ static void __init titan_init_irq(void)
 	irq_set_irq_type(PXA_GPIO_TO_IRQ(TITAN_ETH0_GPIO),	IRQ_TYPE_EDGE_FALLING);
 
 	/* Setup ISA IRQs */
-	for (level = 0; level < ARRAY_SIZE(titan_isa_irqs); level++) {
+
+        /* Which PC104 IRQ mapping to use, 0=V1, 1=V2 */
+        irq_map_index = (((TITAN_BOARD_VERSION & 0xff) >> 4) > 1) ? 1 : 0; 
+
+        /* probably not necessary, but we'll do it anyway... */
+        TITAN_LO_IRQ_STATUS = 0;
+        TITAN_HI_IRQ_STATUS = 0;
+
+	for (level = 0; level < ARRAY_SIZE(titan_isa_irqs[0]); level++) {
                 unsigned int isa_irq = titan_bit_to_irq(level);
 
-                // No handler for IRQ 12 on V2
-                if (board_version == 2 && titan_isa_irqs[level] == 12) {
-                        printk(KERN_INFO "    PC104 IRQ %d not supported in board V2\n",
-                                titan_isa_irqs[level]);
-                }
-                else {
-                        printk(KERN_INFO "Map PC104 IRQ %d to IRQ %d\n",
-                                titan_isa_irqs[level], isa_irq);
-                        irq_set_chip_and_handler(isa_irq, &titan_pc104_irq_chip,
-                                handle_simple_irq);
-                        set_irq_flags(isa_irq, IRQF_VALID | IRQF_PROBE);
-                }
+                printk(KERN_INFO "Map PC104 IRQ %d to IRQ %d\n",
+                        titan_isa_irqs[irq_map_index][level], isa_irq);
+                irq_set_chip_and_handler(isa_irq, &titan_pc104_irq_chip,
+                        handle_simple_irq);
+                set_irq_flags(isa_irq, IRQF_VALID | IRQF_PROBE);
 	}
 
         printk(KERN_INFO "Titan PC104 GPIO=%d, irq=%d, nirqs=%d\n",
