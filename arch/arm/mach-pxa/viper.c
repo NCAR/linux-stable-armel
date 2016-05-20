@@ -76,11 +76,12 @@ u8 viper_version;
  */
 static struct pc104_device
 {
-        unsigned int nirq;
-        unsigned int npend0;
         unsigned long lastpend;
-        unsigned int ndiff;
+        unsigned int npend0;
+        unsigned int nok0;
         unsigned long lastdiff;
+        unsigned int ndiff;
+        unsigned int nok;
 } pc104_dev;
 
 /*
@@ -313,26 +314,30 @@ static struct irq_chip viper_pc104_irq_chip = {
 
 static inline unsigned short viper_pc104_irq_pending(void)
 {
-        unsigned short int val, val2;
+        unsigned short int ibits, mbits;
         
-        val = (VIPER_LO_IRQ_STATUS & 0xff);
-        if (viper_version) val |= (VIPER_HI_IRQ_STATUS & 0x7) << 8;
+        ibits = (VIPER_LO_IRQ_STATUS & 0xff);
+        if (viper_version) ibits |= (VIPER_HI_IRQ_STATUS & 0x7) << 8;
 
-        val2 = val & viper_irq_enabled_mask;
+        /* masked bits */
+        mbits = ibits & viper_irq_enabled_mask;
 
         // Check for spurious interrupts or unexpected CPLD behaviour.
-        if (val != val2) {
+        if (ibits != mbits) {
 		unsigned long j = jiffies;
 		pc104_dev.ndiff++;
-		if (j - pc104_dev.lastdiff > 10 * HZ) {
-			printk(KERN_WARNING "Unexpected PC104 IRQ CPLD value=%#hx, mask=%#hx, #bad=%u, %ld/sec\n",
-				val, viper_irq_enabled_mask, pc104_dev.ndiff,
-				pc104_dev.ndiff / (((long)j - (long)pc104_dev.lastdiff) / HZ));
+		if (j - pc104_dev.lastdiff > 300 * HZ) {
+			printk(KERN_INFO "Unexpected PC104 IRQ status=%#hx, mask=%#hx, #bad=%u, %ld/sec, #ok=%u\n",
+				ibits, viper_irq_enabled_mask, pc104_dev.ndiff,
+				pc104_dev.ndiff / (((long)j - (long)pc104_dev.lastdiff) / HZ),
+                                pc104_dev.nok);
 			pc104_dev.ndiff = 0;
+			pc104_dev.nok = 0;
 			pc104_dev.lastdiff = j;
 		}
         }
-	return val2;
+        else if (ibits) pc104_dev.nok++;
+	return mbits;
 }
 
 static void __init viper_init_irq(void)
@@ -405,14 +410,18 @@ viper_gpio_pc104_thread_handler(int irq, void* devid)
         if (!pending) {
 		unsigned long j = jiffies;
 		dev->npend0++;
-		if (j - dev->lastpend > 10 * HZ) {
-			printk(KERN_WARNING "PC104 IRQ CPLD is zero, mask=%#hx, #bad=%u, %ld/sec\n",
-				viper_irq_enabled_mask, dev->npend0,
-				dev->npend0 / (((long)j - (long)dev->lastpend) / HZ));
+		if (j - dev->lastpend > 300 * HZ) {
+			printk(KERN_INFO "PC104 IRQ CPLD is zero, mask=%#hx, #bad=%u, %ld/sec, #ok=%u\n",
+                                viper_irq_enabled_mask, dev->npend0,
+                                dev->npend0 / (((long)j - (long)dev->lastpend) / HZ),
+                                dev->nok0);
 			dev->npend0 = 0;
+                        dev->nok0 = 0;
 			dev->lastpend = j;
 		}
+                pending = viper_irq_enabled_mask; 
 	}
+        else dev->nok0++;
 
 
 #ifdef TRY_THREADED_HANDLER
