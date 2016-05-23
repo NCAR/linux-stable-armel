@@ -221,7 +221,7 @@ static inline unsigned short titan_pc104_irq_pending(void)
                 unsigned long j = jiffies;
                 pc104_dev.ndiff++;
                 if (j - pc104_dev.lastdiff > 300 * HZ) {
-			printk(KERN_iNFO "Unexpected PC104 IRQ status=%#hx, mask=%#hx, #bad=%u, %ld/sec, #ok=%u\n",
+			printk(KERN_iNFO "PC104 IRQ REG=%#hx, mask=%#hx, #bad=%u, %ld/sec, #ok=%u\n",
 				ibits, titan_irq_enabled_mask, pc104_dev.ndiff,
 				pc104_dev.ndiff / (((long)j - (long)pc104_dev.lastdiff) / HZ),
                                 pc104_dev.nok);
@@ -335,7 +335,7 @@ titan_gpio_pc104_thread_handler(int irq, void* devid)
                 unsigned long j = jiffies;
                 dev->npend0++;
                 if (j - dev->lastpend > 300 * HZ) {
-			printk(KERN_INFO "PC104 IRQ CPLD is zero, mask=%#hx, #bad=%u, %ld/sec, #ok=%u\n",
+			printk(KERN_INFO "PC104 IRQ REG=0, mask=%#hx, #bad=%u, %ld/sec, #ok=%u\n",
                                 titan_irq_enabled_mask, dev->npend0,
                                 dev->npend0 / (((long)j - (long)dev->lastpend) / HZ),
                                 dev->nok0);
