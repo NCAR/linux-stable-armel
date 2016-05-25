@@ -391,13 +391,21 @@ static void __init viper_init_irq(void)
 #endif
 }
 
-#define TRY_THREADED_HANDLER
+#ifdef TRY_THREADED_HANDLER
+static irqreturn_t
+viper_gpio_pc104_handler(int irq, void* devid)
+{
+        if (!viper_irq_enabled_mask) return IRQ_NONE;
+        return IRQ_WAKE_THREAD;
+}
+#endif
 
 static irqreturn_t
-#ifndef TRY_THREADED_HANDLER
-inline
-#endif
+#ifdef TRY_THREADED_HANDLER
 viper_gpio_pc104_thread_handler(int irq, void* devid)
+#else
+viper_gpio_pc104_handler(int irq, void* devid)
+#endif
 {
 	unsigned short pending;
 #ifdef TRY_THREADED_HANDLER
@@ -446,17 +454,6 @@ viper_gpio_pc104_thread_handler(int irq, void* devid)
         viper_icr_set_bit(VIPER_ICR_RETRIG);
 #endif
         return IRQ_HANDLED;
-}
-
-static irqreturn_t
-viper_gpio_pc104_handler(int irq, void* devid)
-{
-#ifdef TRY_THREADED_HANDLER
-        if (!viper_irq_enabled_mask) return IRQ_NONE;
-        return IRQ_WAKE_THREAD;
-#else
-	return viper_gpio_pc104_thread_handler(irq, devid);
-#endif
 }
 
 /*
