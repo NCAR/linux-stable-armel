@@ -327,10 +327,11 @@ static inline unsigned short viper_pc104_irq_pending(void)
 		unsigned long j = jiffies;
 		pc104_dev.ndiff++;
 		if (j - pc104_dev.lastdiff > 300 * HZ) {
-			printk(KERN_INFO "PC104 IRQ REG=%#hx, mask=%#hx, #bad=%u, %ld/sec, #ok=%u\n",
-				ibits, viper_irq_enabled_mask, pc104_dev.ndiff,
-				pc104_dev.ndiff / (((long)j - (long)pc104_dev.lastdiff) / HZ),
-                                pc104_dev.nok);
+                        int td = ((long)j - (long)pc104_dev.lastdiff) / HZ;
+			printk(KERN_INFO "PC104 IRQ sreg=%#hx, mask=%#hx, #bad=%u, %d/sec, #ok=%u, %d/sec\n",
+				ibits, viper_irq_enabled_mask,
+                                pc104_dev.ndiff, pc104_dev.ndiff / td,
+                                pc104_dev.nok, pc104_dev.nok / td );
 			pc104_dev.ndiff = 0;
 			pc104_dev.nok = 0;
 			pc104_dev.lastdiff = j;
@@ -419,10 +420,11 @@ viper_gpio_pc104_handler(int irq, void* devid)
 		unsigned long j = jiffies;
 		dev->npend0++;
 		if (j - dev->lastpend > 300 * HZ) {
-			printk(KERN_INFO "PC104 IRQ REG=0, mask=%#hx, #bad=%u, %ld/sec, #ok=%u\n",
-                                viper_irq_enabled_mask, dev->npend0,
-                                dev->npend0 / (((long)j - (long)dev->lastpend) / HZ),
-                                dev->nok0);
+                        int td = ((long)j - (long)pc104_dev.lastpend) / HZ;
+			printk(KERN_INFO "PC104 IRQ sreg=0, mask=%#hx, #bad=%u, %d/sec, #ok=%u, %d/sec\n",
+                                viper_irq_enabled_mask,
+                                dev->npend0, dev->npend0 / td,
+                                dev->nok0, dev->nok0 / td );
 			dev->npend0 = 0;
                         dev->nok0 = 0;
 			dev->lastpend = j;
