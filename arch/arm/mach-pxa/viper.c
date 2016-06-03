@@ -328,7 +328,7 @@ static inline unsigned short viper_pc104_irq_pending(void)
 		pc104_dev.ndiff++;
 		if (j - pc104_dev.lastdiff > 300 * HZ) {
                         int td = ((long)j - (long)pc104_dev.lastdiff) / HZ;
-			printk(KERN_INFO "PC104 IRQ sreg=%#hx, mask=%#hx, #bad=%u, %d/sec, #ok=%u, %d/sec\n",
+			printk(KERN_INFO "PC104 IRQ bits=%#hx, mask=%#hx, #bad=%u, %d/sec, #ok=%u, %d/sec\n",
 				ibits, viper_irq_enabled_mask,
                                 pc104_dev.ndiff, pc104_dev.ndiff / td,
                                 pc104_dev.nok, pc104_dev.nok / td );
@@ -338,6 +338,7 @@ static inline unsigned short viper_pc104_irq_pending(void)
 		}
         }
         else if (ibits) pc104_dev.nok++;
+
 	return mbits;
 }
 
@@ -421,7 +422,7 @@ viper_gpio_pc104_handler(int irq, void* devid)
 		dev->npend0++;
 		if (j - dev->lastpend > 300 * HZ) {
                         int td = ((long)j - (long)pc104_dev.lastpend) / HZ;
-			printk(KERN_INFO "PC104 IRQ sreg=0, mask=%#hx, #bad=%u, %d/sec, #ok=%u, %d/sec\n",
+			printk(KERN_INFO "PC104 IRQ bits=0, mask=%#hx, #zero=%u, %d/sec, #ok=%u, %d/sec\n",
                                 viper_irq_enabled_mask,
                                 dev->npend0, dev->npend0 / td,
                                 dev->nok0, dev->nok0 / td );
@@ -439,7 +440,7 @@ viper_gpio_pc104_handler(int irq, void* devid)
 #endif
 
 	do {
-		while (likely(pending)) {
+		while (pending) {
                         int bit = __ffs(pending);
                         unsigned int uirq = viper_bit_to_irq(bit);
 			generic_handle_irq(uirq);
