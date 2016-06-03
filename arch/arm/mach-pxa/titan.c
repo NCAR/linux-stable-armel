@@ -178,21 +178,21 @@ static inline unsigned int titan_bit_to_irq(int bit)
  * it has no effect. Note that the chip ack function is only called
  * from handle_edge_irq or handle_level_irq, not by handle_simple_irq.
  */
-static void titan_ack_pc104_irq(struct irq_data *d)
-{
-}
-
 #ifdef TITAN_ACK_NEEDED
 /*
  * An ack function, if is is determined to be needed.
  */
-static void titan_actual_ack_pc104_irq(unsigned int irq)
+static void titan_ack_pc104_irq(unsigned int irq)
 {
         unsigned short ibits = titan_irq_to_bitmask(irq);
         if (ibits & 0xff)
                 TITAN_LO_IRQ_STATUS = (ibits) & 0xff;
         else
                 TITAN_HI_IRQ_STATUS = (ibits >> 8) & 0x07;
+}
+#else
+static void titan_ack_pc104_irq(struct irq_data *d)
+{
 }
 #endif
 
@@ -224,7 +224,7 @@ static inline unsigned short titan_pc104_irq_pending(void)
                 pc104_dev.ndiff++;
                 if (j - pc104_dev.lastdiff > 300 * HZ) {
                         int td = ((long)j - (long)pc104_dev.lastdiff) / HZ;
-			printk(KERN_INFO "PC104 IRQ sreg=%#hx, mask=%#hx, #bad=%u, %d/sec, #ok=%u, %d/sec\n",
+			printk(KERN_INFO "PC104 IRQ bits=%#hx, mask=%#hx, #bad=%u, %d/sec, #ok=%u, %d/sec\n",
 				ibits, titan_irq_enabled_mask,
                                 pc104_dev.ndiff, pc104_dev.ndiff / td,
                                 pc104_dev.nok, pc104_dev.nok / td );
@@ -299,12 +299,12 @@ static inline irqreturn_t
 titan_gpio_pc104_do_pending(unsigned short pending)
 {
     do {
-            while (likely(pending)) {
+            while (pending) {
                     int bit = __ffs(pending);
                     unsigned int uirq = titan_bit_to_irq(bit);
                     generic_handle_irq(uirq);
 #ifdef TITAN_ACK_NEEDED
-                    titan_actual_ack_pc104_irq(uirq);
+                    titan_ack_pc104_irq(uirq);
 #endif
                     pending &= ~titan_irq_to_bitmask(uirq);
             }
@@ -362,7 +362,7 @@ titan_gpio_pc104_handler(int irq, void* devid)
                 dev->npend0++;
                 if (j - dev->lastpend > 300 * HZ) {
                         int td = ((long)j - (long)pc104_dev.lastpend) / HZ;
-			printk(KERN_INFO "PC104 IRQ sreg=0, mask=%#hx, #bad=%u, %d/sec, #ok=%u, %d/sec\n",
+			printk(KERN_INFO "PC104 IRQ bits=0, mask=%#hx, #zero=%u, %d/sec, #ok=%u, %d/sec\n",
                                 titan_irq_enabled_mask,
                                 dev->npend0, dev->npend0 / td,
                                 dev->nok0, dev->nok0 / td );
