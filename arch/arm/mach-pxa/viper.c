@@ -640,22 +640,31 @@ static struct platform_device smc91x_device = {
 };
 
 /* i2c */
-static struct i2c_gpio_platform_data i2c_bus_data = {
+static struct i2c_gpio_platform_data gpio_i2c_bus_data = {
 	.sda_pin = VIPER_RTC_I2C_SDA_GPIO,
 	.scl_pin = VIPER_RTC_I2C_SCL_GPIO,
-	.udelay  = 10,
-	.timeout = HZ,
+        /*
+         * See kernel header: include/linux/i2c-gpio.h
+         * These are the settings that work best on a Viper.
+         * Running "i2cdetect -y 0" scans all addresses in about 0.4 sec,
+         * reporting the expected response from 0x68=ds1338.
+         */
+        .sda_is_open_drain = 0,
+        .scl_is_open_drain = 1,
+        .scl_is_output_only = 0,
+	.udelay  = 5,
+	.timeout = 1,
 };
 
-static struct platform_device i2c_bus_device = {
+static struct platform_device gpio_i2c_bus_device = {
 	.name		= "i2c-gpio",
 	.id		= 1, /* pxa2xx-i2c is bus 0, so start at 1 */
 	.dev = {
-		.platform_data = &i2c_bus_data,
+		.platform_data = &gpio_i2c_bus_data,
 	}
 };
 
-static struct i2c_board_info __initdata viper_i2c_devices[] = {
+static struct i2c_board_info __initdata gpio_i2c_devices[] = {
 	{
 		I2C_BOARD_INFO("ds1338", 0x68),
 	},
@@ -874,16 +883,13 @@ static struct platform_device viper_mtd_devices[] = {
 
 static struct platform_device *viper_devs[] __initdata = {
 	&smc91x_device,
-        /* Viper won't boot if i2c_bus_device is enabled here.
-         * Needs work.
-	&i2c_bus_device,
-        */
 	&serial_device,
 	&isp116x_device,
 	&viper_mtd_devices[0],
 	&viper_mtd_devices[1],
 	/*  &viper_backlight_device, */
 	&viper_pcmcia_device,
+	&gpio_i2c_bus_device,
 };
 
 static mfp_cfg_t viper_pin_config[] __initdata = {
@@ -926,9 +932,6 @@ static mfp_cfg_t viper_pin_config[] __initdata = {
 	GPIO32_GPIO,				/* VIPER_CF_CD_GPIO */
 	MFP_CFG_OUT(GPIO82, AF0, DRIVE_LOW),    /* VIPER_CF_POWER_GPIO */
 
-	/* Integrated UPS control */
-	GPIO20_GPIO,                            /* VIPER_UPS_GPIO */
-
 	/* Vcc regulator control */
 	GPIO6_PSU_DATA,				/* VIPER_PSU_DATA_GPIO */
 	GPIO11_PSU_CLK,				/* VIPER_PSU_CLK_GPIO */
@@ -949,6 +952,7 @@ static mfp_cfg_t viper_pin_config[] __initdata = {
 	GPIO26_GPIO,				/* VIPER_TPM_I2C_SDA_GPIO */
 	GPIO27_GPIO,				/* VIPER_TPM_I2C_SCL_GPIO */
 #endif
+
 	GPIO83_GPIO,				/* VIPER_RTC_I2C_SDA_GPIO */
 	GPIO84_GPIO,				/* VIPER_RTC_I2C_SCL_GPIO */
 
@@ -1125,18 +1129,7 @@ static void __init viper_init(void)
 	pxa_set_fb_info(NULL, &fb_info);
 #endif
 
-	/* v1 hardware cannot use the datacs line */
 	viper_version = viper_hw_version();
-	if (viper_version == 0)
-		smc91x_device.num_resources--;
-
-	pxa_set_i2c_info(NULL);
-	platform_add_devices(viper_devs, ARRAY_SIZE(viper_devs));
-
-	viper_init_vcore_gpios();
-	viper_init_cpufreq();
-
-	register_syscore_ops(&viper_cpu_syscore_ops);
 
 	if (viper_version) {
 		pr_info("viper: hardware v%di%d detected. "
@@ -1150,6 +1143,22 @@ static void __init viper_init(void)
 	} else {
 		pr_info("viper: No version register.\n");
 	}
+
+        if (viper_version) {
+            pxa_set_i2c_info(NULL);     /* PXA I2C */
+        }
+        else {
+            gpio_i2c_bus_device.id = 0;
+            /* v1 hardware cannot use the datacs line */
+            smc91x_device.num_resources--;
+        }
+
+	platform_add_devices(viper_devs, ARRAY_SIZE(viper_devs));
+
+	viper_init_vcore_gpios();
+	viper_init_cpufreq();
+
+	register_syscore_ops(&viper_cpu_syscore_ops);
 
         /* Adjust timing to isp116x USB interface, which is on chip select 3,
          * by tweaking high order bits in MSC1, in order to avoid using a
@@ -1176,7 +1185,7 @@ static void __init viper_init(void)
                 u32val, u32val2, (u32val2 >> 20) & 0xf, (u32val2 >> 24) & 0xf,
                 (u32val2 >> 28) & 0x7);
 
-	i2c_register_board_info(1, ARRAY_AND_SIZE(viper_i2c_devices));
+	i2c_register_board_info(gpio_i2c_bus_device.id, ARRAY_AND_SIZE(gpio_i2c_devices));
 
 	viper_tpm_init();
 	pxa_set_ac97_info(NULL);
