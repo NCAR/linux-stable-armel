@@ -1144,8 +1144,14 @@ static void __init viper_init(void)
 		pr_info("viper: No version register.\n");
 	}
 
+        /* i2cdetect over the i2c-pxa bus on Viper version 1
+         * boards results in
+         * "i2c i2c-0: i2c_pxa: timeout waiting for bus free".
+         * On Version 1 boards, the I2C SDA and SCL lines are not
+         * available on PL4 anyway, so we'll not enable it.
+        */
         if (viper_version) {
-            pxa_set_i2c_info(NULL);     /* PXA I2C */
+            pxa_set_i2c_info(NULL);     /* V2, enable PXA I2C */
         }
         else {
             gpio_i2c_bus_device.id = 0;
@@ -1153,7 +1159,14 @@ static void __init viper_init(void)
             smc91x_device.num_resources--;
         }
 
+        /*
+         * The gpio-i2c bus on GPIO83,84 does work. The only attached
+         * device is the ds1338 RTC.
+         */ 
 	platform_add_devices(viper_devs, ARRAY_SIZE(viper_devs));
+
+	i2c_register_board_info(gpio_i2c_bus_device.id,
+                ARRAY_AND_SIZE(gpio_i2c_devices));
 
 	viper_init_vcore_gpios();
 	viper_init_cpufreq();
@@ -1185,7 +1198,6 @@ static void __init viper_init(void)
                 u32val, u32val2, (u32val2 >> 20) & 0xf, (u32val2 >> 24) & 0xf,
                 (u32val2 >> 28) & 0x7);
 
-	i2c_register_board_info(gpio_i2c_bus_device.id, ARRAY_AND_SIZE(gpio_i2c_devices));
 
 	viper_tpm_init();
 	pxa_set_ac97_info(NULL);
