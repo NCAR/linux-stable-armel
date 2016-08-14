@@ -1049,9 +1049,12 @@ static void __init titan_init(void)
          *
          * Experimenting indicates that increasing RDF1 to 7 from 5 fixes the problem.
          * pxaregs program is very handy for testing these values at runtime.
+         *
+         * In testing, saw some "status check fail", on about 10% of titans with
+         * RDF1=7. So we'll up it to 9.
          */
         u32val = *(unsigned int*) MSC0;
-        *(unsigned int*) MSC0 = (u32val & 0xff0fffff) | 0x00700000;
+        *(unsigned int*) MSC0 = (u32val & 0xff0fffff) | 0x00900000;
         u32val2 = *(unsigned int*) MSC0;
         printk(KERN_INFO "*MSC0 changed from %#x to %#x, CS1 RDFx=%#x RDNx=%#x, RRRx=%#x\n",
                 u32val, u32val2, (u32val2 >> 20) & 0xf, (u32val2 >> 24) & 0xf,
