@@ -76,7 +76,7 @@
 /*
  * Time period to check for paused pc104 interrupt.
  */
-#define PC104_WATCHDOG_JIFFIES (1 * HZ)
+#define PC104_WATCHDOG_JIFFIES (HZ / 10)
 
 /*
  * Information associated with GPIO interrupt handler for PC104.
@@ -85,7 +85,7 @@ static struct pc104_device
 {
         struct timer_list watchdog;
         spinlock_t lock;
-        atomic_t quiet;
+        unsigned short quiet; /* mask of interrupts that are quiet */
         unsigned long lastbark;
         unsigned int nbark;
         unsigned int npend0;
@@ -317,7 +317,6 @@ titan_gpio_pc104_do_pending(unsigned short pending)
 /*
  * Handler for the TITAN_ISA_IRQ GPIO interrupt
  * if we're using a threaded handler.
- * Sets dev->quiet to false to keep the watchdog quiet,
  * schedules the threaded handler.
  */
 static irqreturn_t
@@ -325,7 +324,6 @@ titan_gpio_pc104_handler(int irq, void* devid)
 {
         struct pc104_device* dev = (struct pc104_device*) devid;
         if (!titan_irq_enabled_mask) return IRQ_NONE;
-        atomic_set(&dev->quiet, 0);
         return IRQ_WAKE_THREAD;
 }
 #endif
@@ -351,10 +349,6 @@ titan_gpio_pc104_handler(int irq, void* devid)
 
         struct pc104_device* dev = (struct pc104_device*) devid;
         irqreturn_t result;
-
-#ifndef TRY_THREADED_HANDLER
-        atomic_set(&dev->quiet, 0);
-#endif
 
         pending = titan_pc104_irq_pending();
         if (!pending) {
@@ -392,6 +386,7 @@ titan_gpio_pc104_handler(int irq, void* devid)
 #ifdef TRY_THREADED_HANDLER
         local_irq_save(flags);
 #endif
+        dev->quiet &= ~pending;
         result = titan_gpio_pc104_do_pending(pending);
 
 #ifdef TRY_THREADED_HANDLER
@@ -403,24 +398,36 @@ titan_gpio_pc104_handler(int irq, void* devid)
 static void pc104_irq_watchdog(unsigned long data)
 {
         struct pc104_device* dev = (struct pc104_device*) data;
+        unsigned short quiet;
 
 #ifndef TRY_THREADED_HANDLER
         unsigned long flags;
         spin_lock_irqsave(&dev->lock, flags);
 #endif
 
-        if (atomic_read(&dev->quiet) && titan_irq_enabled_mask) {
-                unsigned short pending = titan_irq_enabled_mask;
+        quiet = dev->quiet;
+
+        if (quiet) {
                 dev->nbark++;
                 if (jiffies - dev->lastbark > 300 * HZ) {
-                        printk(KERN_WARNING "pc104_irq_watchdog bark! #%d\n",
-                                dev->nbark);
+                        char info[128];
+                        char* cp = info;
+                        char* ep = info + sizeof(info) - 10;
+                        *cp = 0;
+                        while (quiet && cp < ep) {
+                                int bit = __ffs(quiet);
+                                unsigned int uirq = titan_bit_to_irq(bit);
+                                cp += sprintf(cp,"%3u",uirq);
+                        }
+
+                        printk(KERN_INFO "pc104_irq_watchdog bark! #%d, quiet IRQs=%s\n",
+                                dev->nbark,info);
                         dev->lastbark = jiffies;
                 }
-                // call handlers for all enabled interrupts
-                titan_gpio_pc104_do_pending(pending);
+                // call handlers for all enabled, but quiet, interrupts
+                titan_gpio_pc104_do_pending(quiet);
         }
-        atomic_set(&dev->quiet, 1);
+        dev->quiet = titan_irq_enabled_mask;
         mod_timer(&dev->watchdog, jiffies + PC104_WATCHDOG_JIFFIES); 
 
 #ifndef TRY_THREADED_HANDLER
@@ -438,7 +445,7 @@ static int titan_pc104_init(void)
         memset(&pc104_dev, 0, sizeof(pc104_dev));
 
         spin_lock_init(&pc104_dev.lock);
-        atomic_set(&pc104_dev.quiet, 1);
+        pc104_dev.quiet = titan_irq_enabled_mask;
 
 #ifdef TRY_THREADED_HANDLER
         err = request_threaded_irq(PXA_GPIO_TO_IRQ(TITAN_ISA_IRQ),
@@ -462,7 +469,7 @@ static int titan_pc104_init(void)
         init_timer(&pc104_dev.watchdog);
         pc104_dev.watchdog.function = pc104_irq_watchdog;
         pc104_dev.watchdog.data = (unsigned long)&pc104_dev;
-        pc104_dev.watchdog.expires = jiffies + PC104_WATCHDOG_JIFFIES;
+        pc104_dev.watchdog.expires = jiffies + PC104_WATCHDOG_JIFFIES / 10;
         pc104_dev.lastbark = 0;
         add_timer(&pc104_dev.watchdog);
 
