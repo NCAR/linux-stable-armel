@@ -418,6 +418,7 @@ static void pc104_irq_watchdog(unsigned long data)
                                 int bit = __ffs(quiet);
                                 unsigned int uirq = titan_bit_to_irq(bit);
                                 cp += sprintf(cp,"%3u",uirq);
+                                quiet &= ~titan_irq_to_bitmask(uirq);
                         }
 
                         printk(KERN_INFO "pc104_irq_watchdog bark! #%d, quiet IRQs=%s\n",
