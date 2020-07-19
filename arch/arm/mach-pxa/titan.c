@@ -1048,21 +1048,24 @@ static void __init titan_init(void)
          *
          * Default values (apparently set in RedBoot) were (as shown by pxaregs program):
          * MSC0=0xe25924e8
-         * MSC0_RT1                          1  nCS[1] ROM Type
-         * MSC0_RBW1                         1  nCS[1] ROM Bus Width (1=16bit)
-         * MSC0_RDF1                         5  nCS[1] ROM Delay First Access
-         * MSC0_RDN1                         2  nCS[1] ROM Delay Next Access
-         * MSC0_RRR1                         6  nCS[1] ROM/SRAM Recovery Time
-         * MSC0_RBUFF1                       1  nCS[1] Return Buffer Behavior (1=streaming)
+         * MSC0_RT1                          1  nCS[1] ROM Type, bits 16-18
+         * MSC0_RBW1                         1  nCS[1] ROM Bus Width (1=16bit), bit 19
+         * MSC0_RDF1                         5  nCS[1] ROM Delay First Access, bits 20-23
+         * MSC0_RDN1                         2  nCS[1] ROM Delay Next Access, bits 24-27
+         * MSC0_RRR1                         6  nCS[1] ROM/SRAM Recovery Time, bits 28-30
+         * MSC0_RBUFF1                       1  nCS[1] Return Buffer Behavior (1=streaming), bit 31
          *
          * Experimenting indicates that increasing RDF1 to 7 from 5 fixes the problem.
          * pxaregs program is very handy for testing these values at runtime.
          *
          * In testing, saw some "status check fail", on about 10% of titans with
          * RDF1=7. So we'll up it to 9.
+         *
+         * These values were successfully used on a titan on the CU Ameriflux
+         * tower. RDN1=7, RDF1=c. So we'll use those.
          */
         u32val = *(unsigned int*) MSC0;
-        *(unsigned int*) MSC0 = (u32val & 0xff0fffff) | 0x00900000;
+        *(unsigned int*) MSC0 = (u32val & 0xf00fffff) | 0x07c00000;
         u32val2 = *(unsigned int*) MSC0;
         printk(KERN_INFO "*MSC0 changed from %#x to %#x, CS1 RDFx=%#x RDNx=%#x, RRRx=%#x\n",
                 u32val, u32val2, (u32val2 >> 20) & 0xf, (u32val2 >> 24) & 0xf,
