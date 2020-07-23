@@ -424,6 +424,7 @@ static void pc104_irq_watchdog(unsigned long data)
                         printk(KERN_INFO "pc104_irq_watchdog bark! #%d, quiet IRQs=%s\n",
                                 dev->nbark,info);
                         dev->lastbark = jiffies;
+                        dev->nbark = 0;
                 }
                 // call handlers for all enabled, but quiet, interrupts
                 titan_gpio_pc104_do_pending(quiet);
