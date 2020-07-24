@@ -471,7 +471,7 @@ static int titan_pc104_init(void)
         init_timer(&pc104_dev.watchdog);
         pc104_dev.watchdog.function = pc104_irq_watchdog;
         pc104_dev.watchdog.data = (unsigned long)&pc104_dev;
-        pc104_dev.watchdog.expires = jiffies + PC104_WATCHDOG_JIFFIES / 10;
+        pc104_dev.watchdog.expires = jiffies + PC104_WATCHDOG_JIFFIES;
         pc104_dev.lastbark = 0;
         add_timer(&pc104_dev.watchdog);
 
